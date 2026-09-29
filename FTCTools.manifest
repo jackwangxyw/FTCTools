@@ -1,0 +1,13 @@
+{
+	"autodeskProduct": "Fusion",
+	"type": "addin",
+	"id": "83e58713-5fc8-4074-a413-3981a642e7cd",
+	"author": "",
+	"description": {
+		"": "Parametric tools for FTC robot design."
+	},
+	"version": "0.1.0",
+	"runOnStartup": true,
+	"supportedOS": "windows|mac",
+	"editEnabled": true
+}
