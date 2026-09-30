@@ -10,8 +10,9 @@ is an expression on it, e.g.
     outside  HTD5_24T * 5 mm / PI - 2 * 0.5715 mm      (2 * PLD)
     root     outside - 2 * 2.08 mm                       (2 * tooth depth)
 
-Running the tool on a tagged circle again edits it, renaming the parameter to
-match (Fusion updates every expression that uses it).
+To edit one, double-click its dimension (or right-click it or the circle,
+Edit Pulley Diameter), or run the tool on the circle again. The parameter is
+renamed to match (Fusion updates every expression that uses it).
 """
 
 import math
@@ -26,12 +27,16 @@ from . import common
 from .common import SketchToolError
 
 CMD_ID = 'FTCTools_PulleyDiameter'
+EDIT_CMD_ID = 'FTCTools_PulleyDiameterEdit'
 ICONS = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'resources', 'diameter')
 KINDS = [('pitch', 'Pitch'), ('outside', 'Outside'), ('root', 'Root')]
 SHORT = {'gt2_2': 'GT2_2', 'gt2_3': 'GT2_3', 'htd_3': 'HTD3', 'htd_5': 'HTD5'}  # parameter-name safe
 DEFAULTS = {'profile': 'htd_5', 'teeth': 24, 'kind': 'pitch'}
 
 _handlers = []
+_ui_handlers = []   # (UI event, handler): these outlive commands and must come off in stop
+_edit_event = []
+_editing = {}
 
 
 def start():
@@ -39,6 +44,10 @@ def start():
         CMD_ID, 'Pulley Diameter', 'Dimension a circle as a timing pulley\'s pitch, outside or root diameter.', ICONS)
     common.on(_handlers, cmd_def.commandCreated, adsk.core.CommandCreatedEventHandler, _created, 'Pulley Diameter')
     panel.get(sketch=True).controls.addCommand(cmd_def)
+    edit_def = common.ui.commandDefinitions.addButtonDefinition(
+        EDIT_CMD_ID, 'Edit Pulley Diameter', 'Reopen the Pulley Diameter dialog for this circle.', ICONS)
+    common.on(_handlers, edit_def.commandCreated, adsk.core.CommandCreatedEventHandler, _edit_created, 'Pulley Diameter')
+    _edit_event.append(common.install_editing(_ui_handlers, _handlers, 'Pulley Diameter', EDIT_CMD_ID, _match))
 
 
 def stop():
@@ -46,10 +55,37 @@ def stop():
     if control:
         control.deleteMe()
     panel.remove_if_empty(sketch=True)
-    cmd_def = common.ui.commandDefinitions.itemById(CMD_ID)
-    if cmd_def:
-        cmd_def.deleteMe()
+    for cmd_id in (CMD_ID, EDIT_CMD_ID):
+        cmd_def = common.ui.commandDefinitions.itemById(cmd_id)
+        if cmd_def:
+            cmd_def.deleteMe()
+    if _edit_event:
+        common.remove_editing(_ui_handlers, _edit_event.pop())
     _handlers.clear()
+
+
+def _match(entity):
+    """The tagged circle behind a diameter/radius dimension or the circle itself."""
+    if entity.objectType in (adsk.fusion.SketchDiameterDimension.classType(),
+                             adsk.fusion.SketchRadialDimension.classType()):
+        entity = entity.entity
+    return entity if common.pulley_tag(entity) else None
+
+
+def _edit_created(args):
+    _editing['circle'] = common.editing_target(EDIT_CMD_ID, _match)
+    _created(args)
+    common.on(_handlers, args.command.activate, adsk.core.CommandEventHandler, _edit_activate, 'Pulley Diameter')
+
+
+def _edit_activate(args):
+    # Selections can only be added once the dialog is up.
+    circle = _editing.pop('circle', None)
+    if circle is None:
+        return
+    inputs = args.command.commandInputs
+    inputs.itemById('circle').addSelection(circle)
+    _load_tag(inputs, circle)
 
 
 def expression(key, teeth_param, kind):
@@ -111,9 +147,12 @@ def _show_result(inputs):
 
 
 def _on_select(args):
+    _load_tag(args.activeInput.parentCommand.commandInputs, args.selection.entity)
+
+
+def _load_tag(inputs, circle):
     # A circle this tool already dimensioned: load what it was made with.
-    inputs = args.activeInput.parentCommand.commandInputs
-    tag = common.pulley_tag(args.selection.entity)
+    tag = common.pulley_tag(circle)
     if tag is None:
         return
     common.select_item(inputs.itemById('profile'), common.profile_label(tag['profile']))

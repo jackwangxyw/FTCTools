@@ -43,6 +43,7 @@ def on(handlers, event, handler_base, fn, title):
     handler = Handler()
     event.add(handler)
     handlers.append(handler)
+    return handler
 
 
 def native(entity):
@@ -115,9 +116,18 @@ def set_param(name, expression, units, comment=''):
 def pulley_tag(entity):
     """The Pulley Diameter tag on a sketch circle, or None:
     {'profile', 'teeth' (parameter name), 'kind'}."""
-    if entity is None or entity.objectType != adsk.fusion.SketchCircle.classType():
+    if entity is None:
         return None
-    attr = native(entity).attributes.itemByName(ATTR_GROUP, PULLEY_ATTR)
+    entity = native(entity)
+    if entity.objectType == adsk.fusion.SketchPoint.classType():
+        # A dimension to a circle is really to its center point.
+        entity = next((c for c in entity.parentSketch.sketchCurves.sketchCircles
+                       if c.centerSketchPoint == entity and c.attributes.itemByName(ATTR_GROUP, PULLEY_ATTR)), None)
+        if entity is None:
+            return None
+    if entity.objectType != adsk.fusion.SketchCircle.classType():
+        return None
+    attr = entity.attributes.itemByName(ATTR_GROUP, PULLEY_ATTR)
     if attr is None:
         return None
     tag = json.loads(attr.value)
@@ -129,3 +139,70 @@ def pulley_tag(entity):
 
 def set_pulley_tag(circle, tag):
     native(circle).attributes.add(ATTR_GROUP, PULLEY_ATTR, json.dumps(tag))
+
+
+# ------------------------------------------------------------------- editing
+# Double-clicking a sketch dimension starts this Fusion command, which shows
+# its inline value box (seen in a commandStarting log, with the dimension as
+# the active selection).
+EDIT_DIMENSION_CMD = 'SketchEditDimensionCmdDef'
+_pending = {}
+
+
+def install_editing(ui_handlers, handlers, title, edit_cmd_id, match):
+    """Double-click and right-click editing for a sketch tool.
+
+    match(entity) returns the entity to edit (truthy) for the dimensions and
+    geometry this tool made. Double-clicking such a dimension cancels Fusion's
+    value box and runs edit_cmd_id instead; right-clicking offers it in the
+    menu. The command is started from a custom event, because a command can't
+    be started while another one is starting.
+    """
+    event_id = edit_cmd_id + '_Launch'
+    custom = app.registerCustomEvent(event_id)
+
+    def add(event, base, fn):
+        ui_handlers.append((event, on(handlers, event, base, fn, title)))
+
+    def launch(args):
+        ui.commandDefinitions.itemById(edit_cmd_id).execute()
+
+    def selected():
+        sel = ui.activeSelections
+        return match(sel.item(0).entity) if sel.count == 1 else None
+
+    def starting(args):
+        if args.commandId != EDIT_DIMENSION_CMD:
+            return
+        target = selected()
+        if target:
+            args.isCanceled = True
+            _pending[edit_cmd_id] = target
+            app.fireCustomEvent(event_id)
+
+    def marking_menu(args):
+        if selected():
+            controls = args.linearMarkingMenu.controls
+            if controls.itemById(edit_cmd_id) is None:
+                controls.addCommand(ui.commandDefinitions.itemById(edit_cmd_id))
+
+    add(custom, adsk.core.CustomEventHandler, launch)
+    add(ui.commandStarting, adsk.core.ApplicationCommandEventHandler, starting)
+    add(ui.markingMenuDisplaying, adsk.core.MarkingMenuEventHandler, marking_menu)
+    return event_id
+
+
+def editing_target(edit_cmd_id, match):
+    """What the edit command was started for: the double-clicked entity, or
+    the right-clicked selection."""
+    target = _pending.pop(edit_cmd_id, None)
+    if target is None and ui.activeSelections.count == 1:
+        target = match(ui.activeSelections.item(0).entity)
+    return target
+
+
+def remove_editing(ui_handlers, event_id):
+    for event, handler in ui_handlers:
+        event.remove(handler)
+    ui_handlers.clear()
+    app.unregisterCustomEvent(event_id)
