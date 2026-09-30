@@ -43,6 +43,9 @@ SIZES = [
     ('hex_af', 'HexWidth', 'Hex width', 'length', '7.15 mm'),
     ('bolt_circle', 'BoltCircle', 'Bolt circle', 'length', '16 mm'),
     ('hole_d', 'HoleDiameter', 'Hole diameter', 'length', '4.3 mm'),
+    ('cb_d', 'CounterboreDiameter', 'Counterbore diameter', 'length', '7.5 mm'),
+    ('cb_depth', 'CounterboreDepth', 'Counterbore depth', 'length', '4 mm'),
+    ('layer_h', 'BridgeLayerHeight', 'Layer height', 'length', '0.2 mm'),
     ('bearing_od', 'BearingOD', 'Bearing OD', 'length', '14 mm'),
     ('bearing_depth', 'BearingDepth', 'Bearing depth', 'length', '4 mm'),
     ('hub_d', 'HubRecessDiameter', 'Hub recess diameter', 'length', '22 mm'),
@@ -57,7 +60,10 @@ CHOICES = [
     ('pattern', [(k, l) for k, l, _ in body.PATTERNS]),
 ]
 FLAGS = [('flip', 'Flip direction', False), ('flanges', 'Flanges', True),
-         ('bearing', 'Bearing recess', False), ('hub_recess', 'Hub recess', False)]
+         ('bearing', 'Bearing recess', False), ('bearing_flip', 'Flip bearing side', False),
+         ('counterbore', 'Counterbore holes', False),
+         ('bridging', 'Sequential bridging', False), ('hub_recess', 'Hub recess', False),
+         ('hub_flip', 'Flip hub side', False)]
 DEFAULTS = dict([(s[0], s[4]) for s in SIZES] + [(c[0], c[5]) for c in COUNTS] + [(f[0], f[2]) for f in FLAGS]
                 + [('profile', 'htd_5'), ('bore', 'round'), ('pattern', 'gobilda')])
 
@@ -189,12 +195,19 @@ def _build_inputs(cmd, values):
     size(g, 'bolt_circle')
     count(g, 'hole_count')
     size(g, 'hole_d')
+    flag(g, 'counterbore')
+    size(g, 'cb_d')
+    size(g, 'cb_depth')
+    flag(g, 'bridging')
+    size(g, 'layer_h')
     flag(g, 'bearing')
     size(g, 'bearing_od')
     size(g, 'bearing_depth')
+    flag(g, 'bearing_flip')
     flag(g, 'hub_recess')
     size(g, 'hub_d')
     size(g, 'hub_depth')
+    flag(g, 'hub_flip')
 
     _update_visibility(inputs)
 
@@ -217,16 +230,26 @@ def _relevant(v):
         'bearing': bore in ('round', 'hub'),
         'bearing_od': bore in ('round', 'hub') and v['bearing'],
         'bearing_depth': bore in ('round', 'hub') and v['bearing'],
+        'bearing_flip': bore in ('round', 'hub') and v['bearing'],
         'hub_recess': bore != 'none',
         'hub_d': bore != 'none' and v['hub_recess'],
         'hub_depth': bore != 'none' and v['hub_recess'],
+        'counterbore': bore == 'hub',
+        'cb_d': bore == 'hub' and v['counterbore'],
+        'cb_depth': bore == 'hub' and v['counterbore'],
+        'bridging': bore == 'hub' and v['counterbore'],
+        'layer_h': bore == 'hub' and v['counterbore'] and v['bridging'],
+        # Which end the hub sits on: moves the hub recess, and the
+        # counterbores (screw heads) go on the other end.
+        'hub_flip': (bore != 'none' and v['hub_recess']) or (bore == 'hub' and v['counterbore']),
     }
 
 
 def _update_visibility(inputs):
     v = {'bore': _choice(inputs, 'bore'), 'pattern': _choice(inputs, 'pattern'),
          'flanges': inputs.itemById('flanges').value, 'bearing': inputs.itemById('bearing').value,
-         'hub_recess': inputs.itemById('hub_recess').value}
+         'hub_recess': inputs.itemById('hub_recess').value, 'counterbore': inputs.itemById('counterbore').value,
+         'bridging': inputs.itemById('bridging').value}
     for input_id, shown in _relevant(v).items():
         inputs.itemById(input_id).isVisible = shown
 
@@ -252,7 +275,7 @@ def _read_inputs(inputs):
 def _options(v):
     """Evaluated build options (cm, radians) from dialog values."""
     um = _design().unitsManager
-    o = {k: v[k] for k in ('profile', 'bore', 'pattern', 'teeth', 'hole_count', 'flanges', 'bearing', 'hub_recess', 'flip')}
+    o = {k: v[k] for k in ('profile', 'bore', 'pattern', 'teeth', 'hole_count', 'flanges', 'bearing', 'bearing_flip', 'counterbore', 'bridging', 'hub_recess', 'hub_flip', 'flip')}
     for input_id, _, _, kind, _ in SIZES:
         value = um.evaluateExpression(v[input_id], _units(kind))
         o[input_id] = value  # angles evaluate to radians
@@ -260,7 +283,7 @@ def _options(v):
 
 
 def _input_changed(args):
-    if args.input.id in ('bore', 'pattern', 'flanges', 'bearing', 'hub_recess'):
+    if args.input.id in ('bore', 'pattern', 'flanges', 'bearing', 'hub_recess', 'counterbore', 'bridging'):
         # args.inputs is only the changed input's group; look up from the command.
         _update_visibility(args.input.parentCommand.commandInputs)
 
@@ -410,8 +433,9 @@ def _add_dependencies(add, v):
 
 # ---------------------------------------------------------------------- edit
 
-# What a pulley made before flanges and bores existed has for the parameters
-# it lacks. Custom parameters can only be added when a feature is created.
+# What a pulley made by an older version has for the parameters it lacks
+# (anything not listed falls back to DEFAULTS). Custom parameters can only be
+# added when a feature is created.
 LEGACY = {'flanges': False, 'bore': 'none', 'bearing': False, 'hub_recess': False}
 
 
@@ -517,8 +541,8 @@ def _edit_execute(args):
             continue
         param.value = 1 if v[input_id] else 0
     if missing:
-        ui.messageBox('This pulley was made before flanges and bores existed, so those settings '
-                      'were not saved. Delete it and create it again to use them.', 'Pulley')
+        ui.messageBox('This pulley was made with an older version of the tool, so these settings were '
+                      'not saved: %s. Delete it and create it again to use them.' % ', '.join(missing), 'Pulley')
     feature.parentComponent.name = _pulley_name(v['profile'], v['teeth'])
 
     _restore_timeline()
@@ -575,7 +599,7 @@ def _compute(args):
 def _feature_options(feature):
     """Build options (cm, radians) straight from the feature's parameter values."""
     v = _feature_values(feature)
-    o = {k: v[k] for k in ('profile', 'bore', 'pattern', 'teeth', 'hole_count', 'flanges', 'bearing', 'hub_recess', 'flip')}
+    o = {k: v[k] for k in ('profile', 'bore', 'pattern', 'teeth', 'hole_count', 'flanges', 'bearing', 'bearing_flip', 'counterbore', 'bridging', 'hub_recess', 'hub_flip', 'flip')}
     um = _design().unitsManager
     for input_id, _, _, kind, default in SIZES:
         param = feature.parameters.itemById(input_id)

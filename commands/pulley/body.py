@@ -84,8 +84,8 @@ def _hex_prism(across_flats, z0, z1):
 def build(o):
     """o: dict with profile, teeth, width, clearance, flanges, flange_t,
     flange_h, flange_angle, bore, bore_d, hex_af, pattern, bolt_circle,
-    hole_d, hole_count, bearing, bearing_od, bearing_depth, hub_recess,
-    hub_d, hub_depth. Lengths in cm, angle in radians."""
+    hole_d, hole_count, counterbore, cb_d, cb_depth, bridging, layer_h, bearing, bearing_flip,
+    bearing_od, bearing_depth, hub_recess, hub_flip, hub_d, hub_depth. Lengths in cm, angle in radians."""
     spec = profiles.profile(o['profile'])
     od_r = profiles.outside_radius(spec, o['teeth'])
     t = o['flange_t'] if o['flanges'] else 0.0
@@ -120,26 +120,67 @@ def build(o):
             raise PulleyError('Bolt holes fall outside the pulley.')
         if circle / 2 - hole / 2 <= o['bore_d'] / 2:
             raise PulleyError('Bolt holes run into the bore. Shrink the bore or widen the bolt circle.')
-        for i in range(int(count)):
-            a = start + 2 * math.pi * i / count
-            _merge(solid, _cylinder(hole / 2, -THROUGH, length + THROUGH,
-                                    circle / 2 * math.cos(a), circle / 2 * math.sin(a)), DIFFERENCE)
+        centers = [(circle / 2 * math.cos(start + 2 * math.pi * i / count),
+                    circle / 2 * math.sin(start + 2 * math.pi * i / count)) for i in range(int(count))]
+        for x, y in centers:
+            _merge(solid, _cylinder(hole / 2, -THROUGH, length + THROUGH, x, y), DIFFERENCE)
+        if o['counterbore']:
+            r, d = o['cb_d'] / 2, o['cb_depth']
+            if r <= hole / 2:
+                raise PulleyError('Counterbore must be wider than the bolt holes.')
+            if circle / 2 + r >= root_r:
+                raise PulleyError('Counterbores fall outside the pulley.')
+            layers = 2 * o['layer_h'] if o['bridging'] else 0.0
+            if d + layers >= length:
+                raise PulleyError('Counterbore is deeper than the pulley.')
+            # Screw heads go on the end away from the hub. `inward` points from
+            # that end into the part; `floor` is the counterbore's floor.
+            inward, floor = (1, d) if o['hub_flip'] else (-1, length - d)
+            z_open = -THROUGH if o['hub_flip'] else length + THROUGH
+            for x, y in centers:
+                _merge(solid, _cylinder(r, min(z_open, floor), max(z_open, floor), x, y), DIFFERENCE)
+                if o['bridging']:
+                    _bridge_layers(solid, x, y, r, hole, floor, inward, o['layer_h'])
 
     if o['bearing'] and bore in ('round', 'hub'):
         r = o['bearing_od'] / 2
         if r >= root_r:
             raise PulleyError('Bearing recess is larger than the pulley.')
         d = o['bearing_depth']
-        _merge(solid, _cylinder(r, -THROUGH, d), DIFFERENCE)
-        _merge(solid, _cylinder(r, length - d, length + THROUGH), DIFFERENCE)
+        # One end: the start end, or the far end when flipped.
+        if o['bearing_flip']:
+            _merge(solid, _cylinder(r, length - d, length + THROUGH), DIFFERENCE)
+        else:
+            _merge(solid, _cylinder(r, -THROUGH, d), DIFFERENCE)
 
     if o['hub_recess'] and bore != 'none':
         r = o['hub_d'] / 2
         if r >= root_r:
             raise PulleyError('Hub recess is larger than the pulley.')
-        _merge(solid, _cylinder(r, -THROUGH, o['hub_depth']), DIFFERENCE)
+        d = o['hub_depth']
+        if o['hub_flip']:
+            _merge(solid, _cylinder(r, length - d, length + THROUGH), DIFFERENCE)
+        else:
+            _merge(solid, _cylinder(r, -THROUGH, d), DIFFERENCE)
 
     return solid
+
+
+def _bridge_layers(solid, x, y, cb_r, hole_d, floor, inward, h):
+    """Sequential bridging above a counterbore floor, for printing it facing
+    the bed: the first layer cuts a slot the bolt hole's width (leaving two
+    bridges across the counterbore), the second a square of that width (two
+    bridges the other way). The round hole then starts on solid layers."""
+    tb = _tb()
+    for k, (length, width) in enumerate(((2 * cb_r, hole_d), (hole_d, hole_d))):
+        za, zb = floor + inward * k * h, floor + inward * (k + 1) * h
+        box = tb.createBox(adsk.core.OrientedBoundingBox3D.create(
+            _pt(x, y, (za + zb) / 2), adsk.core.Vector3D.create(1, 0, 0), adsk.core.Vector3D.create(0, 1, 0),
+            length, width, abs(zb - za)))
+        # Stay inside the counterbore's circle, so the slot's corners don't
+        # cut into the wall around it.
+        _merge(box, _cylinder(cb_r, min(za, zb), max(za, zb), x, y), adsk.fusion.BooleanTypes.IntersectionBooleanType)
+        _merge(solid, box, DIFFERENCE)
 
 
 def _cut_round(solid, radius, root_r, length):
