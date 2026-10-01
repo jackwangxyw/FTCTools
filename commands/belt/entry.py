@@ -118,6 +118,7 @@ def _design():
 
 def _build_inputs(cmd, values):
     inputs = cmd.commandInputs
+    cmd.setDialogMinimumSize(300, 100)  # wide enough that no label is cut off
     units = _design().unitsManager.defaultLengthUnits
 
     sel = inputs.addSelectionInput('center', 'Pulley 1', 'A Pulley, or its center: sketch point or circle, or any point with a plane')

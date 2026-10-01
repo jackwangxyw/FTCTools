@@ -112,6 +112,7 @@ def expression(key, t1, t2, length):
 def _created(args):
     cmd = args.command
     inputs = cmd.commandInputs
+    cmd.setDialogMinimumSize(300, 100)  # wide enough that no label is cut off
     for input_id, label in (('one', 'Pulley 1'), ('two', 'Pulley 2')):
         sel = inputs.addSelectionInput(input_id, label, 'Point, circle (its center) or line')
         for f in ('SketchPoints', 'SketchCircles', 'SketchLines'):
@@ -155,12 +156,7 @@ def _edit_activate(args):
     inputs = args.command.commandInputs
     inputs.itemById('one').addSelection(one)
     inputs.itemById('two').addSelection(two)
-    v = _read(inputs)
-    for input_id, entity in (('teeth1', one), ('teeth2', two)):
-        tag = _belt_tag(entity)
-        if tag is not None:
-            common.select_item(inputs.itemById('profile'), common.profile_label(tag['profile']))
-    _load_existing(inputs, v)
+    _load_existing(inputs, _read(inputs))  # profile, tooth counts and belt
     _refresh(inputs)
 
 
@@ -265,7 +261,7 @@ def apply(v):
     one, two = _targets(v['one'], v['two'])
     dim = _existing_dimension(one, two)
     # Editing keeps the dimension's name; a new one gets the next free CCn.
-    name = _our_name(dim) or common.unique_name('CC', '')
+    name = _our_name(dim) or common.unique_name('CC')
     params = common.design().userParameters
 
     # Tooth counts: a Pulley & Gear Diameter circle's own parameter, else ours.

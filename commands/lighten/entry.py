@@ -138,6 +138,7 @@ def _design():
 
 def _build_inputs(cmd, values):
     inputs = cmd.commandInputs
+    cmd.setDialogMinimumSize(300, 100)  # wide enough that no label is cut off
     units = _design().unitsManager.defaultLengthUnits
 
     sel = inputs.addSelectionInput('face', 'Face', 'Planar face to pocket')

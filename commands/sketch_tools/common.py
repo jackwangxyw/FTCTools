@@ -86,11 +86,11 @@ def check_name(name):
         raise SketchToolError('"%s" is not a valid parameter name: letters, digits and _, not starting with a digit.' % name)
 
 
-def unique_name(prefix, suffix):
-    """First prefix + n (n = 1, 2, ...) whose prefix + n + suffix parameter doesn't exist."""
+def unique_name(prefix):
+    """First prefix + n (n = 1, 2, ...) that no parameter has."""
     params = design().allParameters
     n = 1
-    while params.itemByName('%s%d%s' % (prefix, n, suffix)) is not None:
+    while params.itemByName('%s%d' % (prefix, n)) is not None:
         n += 1
     return '%s%d' % (prefix, n)
 
@@ -122,7 +122,10 @@ def set_param(name, expression, units, comment=''):
 def pulley_tag(entity):
     """The Pulley & Gear Diameter tag on a sketch circle, or None:
     {'profile', 'teeth' (parameter name), 'kind', and 'module' for a gear}."""
-    if entity is None:
+    # Right-click hands over whatever is selected (a component, a body, ...);
+    # only sketch points and circles can carry the tag.
+    if entity is None or entity.objectType not in (adsk.fusion.SketchPoint.classType(),
+                                                   adsk.fusion.SketchCircle.classType()):
         return None
     entity = native(entity)
     if entity.objectType == adsk.fusion.SketchPoint.classType():

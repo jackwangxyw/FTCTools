@@ -8,7 +8,6 @@ so moving the point moves the pulley.
 """
 
 import json
-import math
 import os
 import traceback
 
@@ -148,6 +147,7 @@ def _units(kind):
 
 def _build_inputs(cmd, values):
     inputs = cmd.commandInputs
+    cmd.setDialogMinimumSize(330, 100)  # wide enough that no label is cut off
 
     sel = inputs.addSelectionInput('center', 'Center', 'Sketch point or circle, or any point with a plane')
     for f in ('SketchPoints', 'SketchCircles', 'Vertices', 'ConstructionPoints'):

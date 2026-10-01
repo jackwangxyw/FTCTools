@@ -132,6 +132,7 @@ def diameter(key, teeth, kind, module=None):
 def _created(args):
     cmd = args.command
     inputs = cmd.commandInputs
+    cmd.setDialogMinimumSize(290, 100)  # wide enough that no label is cut off
     sel = inputs.addSelectionInput('circle', 'Circle', 'Sketch circle to dimension')
     sel.addSelectionFilter('SketchCircles')
     sel.setSelectionLimits(1, 1)
