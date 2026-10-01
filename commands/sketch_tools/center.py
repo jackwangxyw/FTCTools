@@ -11,14 +11,14 @@ edit box stays short:
          L(C) = 2 C cos(phi) + pi (r1 + r2) + 2 phi d,  sin(phi) = d / C
 
 C0 is inlined, so the parameters added are <Name>, the belt's (<Name>_BeltTeeth
-or <Name>_BeltLength) and tooth counts for picks that aren't Pulley Diameter
+or <Name>_BeltLength) and tooth counts for picks that aren't Pulley & Gear Diameter
 circles. One step is within 0.002 mm of exact even for a 5:1 ratio packed
 tight, and ~1e-9 mm for normal layouts.
 
 To edit one, double-click its dimension (or right-click, Edit Center
 Distance): the dialog reopens with its two entities and values.
 
-Circles dimensioned with Pulley Diameter fill in the profile and tooth count,
+Circles dimensioned with Pulley & Gear Diameter fill in the profile and tooth count,
 and the expressions use their <Pulley>_Teeth parameters directly, so a pulley
 tooth change resizes the circle and moves the centers together.
 """
@@ -61,6 +61,10 @@ def start():
 
 
 def stop():
+    # Editing hooks are on the UI, not a command; take them off first, so a
+    # failure below can't leave them attached.
+    if _edit_event:
+        common.remove_editing(_ui_handlers, _edit_event.pop())
     control = panel.get(sketch=True).controls.itemById(CMD_ID)
     if control:
         control.deleteMe()
@@ -69,9 +73,6 @@ def stop():
         cmd_def = common.ui.commandDefinitions.itemById(cmd_id)
         if cmd_def:
             cmd_def.deleteMe()
-    # Editing hooks are on the UI, not a command; take them off.
-    if _edit_event:
-        common.remove_editing(_ui_handlers, _edit_event.pop())
     _handlers.clear()
 
 
@@ -149,12 +150,14 @@ def _edit_activate(args):
     if not _editing:
         return
     one, two = _editing.pop('entities')
+    if one is None:
+        return  # started without a dimension (e.g. Repeat): an empty dialog
     inputs = args.command.commandInputs
     inputs.itemById('one').addSelection(one)
     inputs.itemById('two').addSelection(two)
     v = _read(inputs)
     for input_id, entity in (('teeth1', one), ('teeth2', two)):
-        tag = common.pulley_tag(entity)
+        tag = _belt_tag(entity)
         if tag is not None:
             common.select_item(inputs.itemById('profile'), common.profile_label(tag['profile']))
     _load_existing(inputs, v)
@@ -200,8 +203,8 @@ def center_distance(v):
 def _on_select(args):
     inputs = args.activeInput.parentCommand.commandInputs
     entity = args.selection.entity
-    # A Pulley Diameter circle: take its profile and tooth count.
-    tag = common.pulley_tag(entity)
+    # A Pulley & Gear Diameter circle: take its profile and tooth count.
+    tag = _belt_tag(entity)
     if tag is not None:
         common.select_item(inputs.itemById('profile'), common.profile_label(tag['profile']))
         teeth = common.design().userParameters.itemByName(tag['teeth'])
@@ -227,9 +230,9 @@ def _load_existing(inputs, v):
     params = common.design().userParameters
     common.select_item(inputs.itemById('profile'), common.profile_label(made['profile']))
     common.select_item(inputs.itemById('mode'), dict(MODES)[made['mode']])
-    # Tooth counts: a Pulley Diameter circle's parameter, else this one's own.
+    # Tooth counts: a Pulley & Gear Diameter circle's parameter, else this one's own.
     for index, input_id, entity in ((1, 'teeth1', v['one']), (2, 'teeth2', v['two'])):
-        tag = common.pulley_tag(entity)
+        tag = _belt_tag(entity)
         param = params.itemByName(tag['teeth'] if tag else '%s_Teeth%d' % (name, index))
         if param is not None:
             inputs.itemById(input_id).value = int(round(param.value))
@@ -254,6 +257,7 @@ def _execute(args):
         center_distance(v)
         apply(v)
     except (SketchToolError, PulleyError) as e:
+        args.executeFailed = True  # roll back what apply already changed
         common.ui.messageBox(str(e), 'Center Distance')
 
 
@@ -264,11 +268,13 @@ def apply(v):
     name = _our_name(dim) or common.unique_name('CC', '')
     params = common.design().userParameters
 
-    # Tooth counts: a Pulley Diameter circle's own parameter, else ours.
+    # Tooth counts: a Pulley & Gear Diameter circle's own parameter, else ours.
     teeth = []
     for index, entity, count in ((1, v['one'], v['teeth1']), (2, v['two'], v['teeth2'])):
         tag = common.pulley_tag(entity)
         if tag is not None:
+            if tag['profile'] == common.GEAR:
+                raise SketchToolError('Pulley %d is a gear circle; a belt needs pulleys.' % index)
             if tag['profile'] != v['profile']:
                 raise SketchToolError('Pulley %d is %s, not %s. Change one of them to match.' % (
                     index, common.profile_label(tag['profile']), common.profile_label(v['profile'])))
@@ -281,13 +287,12 @@ def apply(v):
 
     if v['mode'] == 'teeth':
         common.set_param(name + '_BeltTeeth', str(int(v['belt_teeth'])), '', 'Belt tooth count (FTC Tools)')
-        length = '%s_BeltTeeth * %s' % (name, common.mm(profiles.profile(v['profile'])['pitch']))
         unused = name + '_BeltLength'
     else:
         common.set_param(name + '_BeltLength', v['belt_length'], 'mm', 'Belt pitch length (FTC Tools)')
-        length = name + '_BeltLength'
         unused = name + '_BeltTeeth'
 
+    length = _length(name, v['profile'], v['mode'])
     common.set_param(name, expression(v['profile'], teeth[0], teeth[1], length), 'mm', 'Center distance (FTC Tools)')
     try:
         if dim is None:
@@ -302,6 +307,46 @@ def apply(v):
     common.design().attributes.add(common.ATTR_GROUP, CC_ATTR + name, json.dumps(
         {'profile': v['profile'], 'mode': v['mode']}))
     return dim
+
+
+def _belt_tag(entity):
+    """A Pulley & Gear Diameter circle's tag for the dialog to load; gears take no belt."""
+    tag = common.pulley_tag(entity)
+    return tag if tag is None or tag['profile'] != common.GEAR else None
+
+
+def _length(name, key, mode):
+    """The belt pitch-length expression of center distance `name`."""
+    if mode == 'teeth':
+        return '%s_BeltTeeth * %s' % (name, common.mm(profiles.profile(key)['pitch']))
+    return name + '_BeltLength'
+
+
+def users(circle):
+    """Names of the center distances dimensioned to a circle's center."""
+    point = common.native(circle).centerSketchPoint
+    return [_our_name(dim) for dim in point.parentSketch.sketchDimensions
+            if _our_name(dim) and point in _dimension_entities(dim)]
+
+
+def follow_profile(circle, key):
+    """Rebuild the center distances on a circle whose Pulley & Gear Diameter profile
+    changed to `key`, so they use its pitch. Tooth and belt counts stay."""
+    point = common.native(circle).centerSketchPoint
+    for dim in point.parentSketch.sketchDimensions:
+        name = _our_name(dim)
+        ends = _dimension_entities(dim)
+        if name is None or point not in ends:
+            continue
+        attr = common.design().attributes.itemByName(common.ATTR_GROUP, CC_ATTR + name)
+        made = json.loads(attr.value)
+        teeth = []
+        for index, entity in enumerate(ends, 1):
+            tag = common.pulley_tag(entity)
+            teeth.append(tag['teeth'] if tag else '%s_Teeth%d' % (name, index))
+        common.set_param(name, expression(key, teeth[0], teeth[1], _length(name, key, made['mode'])), 'mm')
+        made['profile'] = key
+        attr.value = json.dumps(made)
 
 
 def _targets(one, two):

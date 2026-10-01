@@ -403,6 +403,13 @@ def _edit_execute(args):
     _clear_overlay()
     feature.timelineObject.rollTo(True)
     v = _read_inputs(args.command.commandInputs)
+    # Values that can't make a belt: say why, as create does, and change nothing.
+    try:
+        _, frame, phase = _placement(v['center'], v['plane'], v['toward'], v['flip'])
+        _solid(_options(v, phase), frame)
+    except PulleyError as e:
+        ui.messageBox(str(e), 'Belt')
+        return
 
     # Rolled back to before this feature: one recompute when it rolls forward.
     feature.dependencies.deleteAll()
@@ -521,6 +528,9 @@ def _point_in(entity, center, comp):
         p = native.geometry
     owner = pulley_entry._owner(native)
     if owner == comp:
+        if pulley_entry._other_copy(entity, center):
+            raise PulleyError('Pulley 2 is in another copy of %s than pulley 1. The belt goes in %s, '
+                              'so every copy gets one: pick both in the same copy.' % (comp.name, comp.name))
         return p
     p = p.copy()
     if entity.assemblyContext:

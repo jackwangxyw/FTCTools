@@ -1,6 +1,6 @@
 """Shared pieces of the sketch tools: parameters, pulley tags and dimensions.
 
-The sketch tools are parametric through user parameters. Pulley Diameter
+The sketch tools are parametric through user parameters. Pulley & Gear Diameter
 drives a circle's diameter dimension with an expression on a tooth-count
 parameter (e.g. Pulley1_Teeth), and tags the circle with an attribute naming
 that parameter and the profile. Center Distance reads those tags, so its
@@ -21,6 +21,8 @@ ui = app.userInterface
 
 ATTR_GROUP = 'FTCTools'
 PULLEY_ATTR = 'pulley'
+GEAR = 'gear'            # the "profile" of a spur gear circle; its tag also has 'module' (cm)
+GEAR_LABEL = 'Gear'
 NAME_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
 
 
@@ -55,17 +57,21 @@ def mm(cm):
     return '%s mm' % repr(round(cm * 10, 6)).rstrip('0').rstrip('.')
 
 
+def _labels():
+    return [(k, l) for k, l, _ in profiles.PROFILES] + [(GEAR, GEAR_LABEL)]
+
+
 def profile_label(key):
-    return next(l for k, l, _ in profiles.PROFILES if k == key)
+    return next(l for k, l in _labels() if k == key)
 
 
 def profile_key(label):
-    return next(k for k, l, _ in profiles.PROFILES if l == label)
+    return next(k for k, l in _labels() if l == label)
 
 
-def add_profile_dropdown(inputs, selected):
+def add_profile_dropdown(inputs, selected, gear=False):
     dd = inputs.addDropDownCommandInput('profile', 'Profile', adsk.core.DropDownStyles.TextListDropDownStyle)
-    for key, label, _ in profiles.PROFILES:
+    for key, label in (_labels() if gear else _labels()[:-1]):
         dd.listItems.add(label, key == selected)
     return dd
 
@@ -114,8 +120,8 @@ def set_param(name, expression, units, comment=''):
 
 
 def pulley_tag(entity):
-    """The Pulley Diameter tag on a sketch circle, or None:
-    {'profile', 'teeth' (parameter name), 'kind'}."""
+    """The Pulley & Gear Diameter tag on a sketch circle, or None:
+    {'profile', 'teeth' (parameter name), 'kind', and 'module' for a gear}."""
     if entity is None:
         return None
     entity = native(entity)

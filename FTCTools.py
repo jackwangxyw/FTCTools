@@ -14,8 +14,13 @@ def run(context):
 
 
 def stop(context):
-    try:
-        for command in reversed(COMMANDS):
+    # Stop every command even if one fails, so none stays registered and
+    # breaks the next start.
+    errors = []
+    for command in reversed(COMMANDS):
+        try:
             command.stop()
-    except Exception:
-        adsk.core.Application.get().userInterface.messageBox('FTCTools failed to stop:\n' + traceback.format_exc())
+        except Exception:
+            errors.append(traceback.format_exc())
+    if errors:
+        adsk.core.Application.get().userInterface.messageBox('FTCTools failed to stop:\n' + '\n'.join(errors))

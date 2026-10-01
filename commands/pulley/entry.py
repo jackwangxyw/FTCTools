@@ -507,6 +507,12 @@ def _edit_execute(args):
     _clear_overlay()
     feature.timelineObject.rollTo(True)
     v = _read_inputs(args.command.commandInputs)
+    # Values that can't make a pulley: say why, as create does, and change nothing.
+    try:
+        _solid(_options(v), _placement(v['center'], v['plane'])[1])
+    except PulleyError as e:
+        ui.messageBox(str(e), 'Pulley')
+        return
 
     # Rolled back to before this feature: one recompute when it rolls forward.
     feature.dependencies.deleteAll()
@@ -635,6 +641,12 @@ def _native(entity):
     return entity
 
 
+def _other_copy(a, b):
+    """a and b were picked in different copies (occurrences) of the same component."""
+    return bool(a.assemblyContext and b.assemblyContext
+                and a.assemblyContext.fullPathName != b.assemblyContext.fullPathName)
+
+
 def _owner(native):
     t = native.objectType
     if t in SKETCH_CENTERS:
@@ -693,6 +705,9 @@ def _plane_in(plane, center, comp):
         geom.normal = n
     owner = _owner(native)
     if owner == comp:
+        if _other_copy(plane, center):
+            raise PulleyError('The plane is in another copy of %s than the center. The pulley goes in %s, '
+                              'so every copy gets one: pick both in the same copy.' % (comp.name, comp.name))
         return geom
     # Different components: go through root space.
     if plane.assemblyContext:
