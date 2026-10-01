@@ -43,7 +43,7 @@ EXTENTS = [('all', 'All'), ('distance', 'Distance'), ('object', 'To object')]
 LENGTHS = [('wall', 'WallThickness', 'Wall thickness'),
            ('strut', 'StrutThickness', 'Strut thickness'),
            ('radius', 'FilletRadius', 'Fillet radius'),
-           ('minwidth', 'MinPocketWidth', 'Min pocket width'),
+           ('minwidth', 'MinPocketWidth', 'Min width'),
            ('depth', 'Depth', 'Depth')]
 POSITIVE = ('wall', 'strut', 'radius')  # minwidth may be 0, meaning off
 
@@ -138,7 +138,6 @@ def _design():
 
 def _build_inputs(cmd, values):
     inputs = cmd.commandInputs
-    cmd.setDialogMinimumSize(300, 100)  # wide enough that no label is cut off
     units = _design().unitsManager.defaultLengthUnits
 
     sel = inputs.addSelectionInput('face', 'Face', 'Planar face to pocket')
@@ -149,7 +148,7 @@ def _build_inputs(cmd, values):
     sel.addSelectionFilter('SketchCurves')
     sel.setSelectionLimits(0, 0)
 
-    sel = inputs.addSelectionInput('exclude', 'Excluded regions', 'Sketch profiles to leave solid, with a wall around them')
+    sel = inputs.addSelectionInput('exclude', 'Exclusions', 'Sketch profiles to leave solid, with a wall around them')
     sel.addSelectionFilter('Profiles')
     sel.setSelectionLimits(0, 0)
 

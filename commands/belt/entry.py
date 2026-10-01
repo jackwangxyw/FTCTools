@@ -32,6 +32,10 @@ FEATURE_ID = 'FTCToolsBelt'
 ICONS = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'resources')
 SETTINGS_PATH = os.path.join(os.getenv('APPDATA') or os.path.expanduser('~'), 'FTCTools', 'belt.json')
 OVERLAY_COLOR = (255, 210, 0)
+# Rubber - Weathered in the Fusion Appearance Library, by id so it's found in
+# any UI language.
+APPEARANCE_LIBRARY = 'BA5EE55E-9982-449B-9D66-9F036540E140'
+APPEARANCE_ID = 'Prism-132'
 SKETCH_CENTERS = pulley_entry.SKETCH_CENTERS
 
 SIZES = [('width', 'Width', 'Width', '6 mm'), ('offset', 'Offset', 'Offset', '0 mm')]
@@ -118,7 +122,6 @@ def _design():
 
 def _build_inputs(cmd, values):
     inputs = cmd.commandInputs
-    cmd.setDialogMinimumSize(300, 100)  # wide enough that no label is cut off
     units = _design().unitsManager.defaultLengthUnits
 
     sel = inputs.addSelectionInput('center', 'Pulley 1', 'A Pulley, or its center: sketch point or circle, or any point with a plane')
@@ -293,18 +296,29 @@ def _create_execute(args):
     try:
         parent, frame, phase = _placement(v['center'], v['plane'], v['toward'], v['flip'])
         solid = _solid(_options(v, phase), frame)
+        look = _belt_appearance()
     except PulleyError as e:
         ui.messageBox(str(e), 'Belt')
         return
-    _create_feature(v, parent, solid)
+    _create_feature(v, parent, solid, look)
     _save_settings(v)
+
+
+def _belt_appearance():
+    """Rubber - Weathered, copied into the design from the library the first time."""
+    library = app.materialLibraries.itemById(APPEARANCE_LIBRARY)
+    source = library.appearances.itemById(APPEARANCE_ID) if library else None
+    if source is None:
+        raise PulleyError('Could not find the Rubber - Weathered appearance in the Fusion Appearance Library.')
+    appearances = _design().appearances
+    return appearances.itemByName(source.name) or appearances.addByCopy(source, source.name)
 
 
 def _belt_name(key, teeth):
     return '%s %dT Belt' % (pulley_entry.SHORT_NAMES[key], teeth)
 
 
-def _create_feature(v, parent, solid):
+def _create_feature(v, parent, solid, look):
     """New component under the placement's component, holding the belt feature.
     Its occurrence has an identity transform, so the solid needs no transform."""
     occ = parent.occurrences.addNewComponent(adsk.core.Matrix3D.create())
@@ -314,9 +328,11 @@ def _create_feature(v, parent, solid):
 
     base = comp.features.baseFeatures.add()
     base.startEdit()
-    comp.bRepBodies.add(solid, base).name = comp.name
+    body = comp.bRepBodies.add(solid, base)
     base.finishEdit()
     base.name = 'Belt Body'
+    body.name = comp.name
+    body.appearance = look
 
     cf_input = comp.features.customFeatures.createInput(_feature_def)
     for input_id, name, _, _ in SIZES:

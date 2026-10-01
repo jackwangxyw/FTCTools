@@ -26,8 +26,8 @@ EPS = 1e-4  # cm; flange features shorter than this are treated as zero
 # goBILDA: 4x M4 on a 16 mm square, so a 16*sqrt(2) mm circle starting at 45 deg.
 # REV: 4x M3 on a 16 mm circle. The pulley gets clearance holes for those screws.
 PATTERNS = [
-    ('gobilda', 'goBILDA (4x M4, 16mm square)', {'count': 4, 'circle': 1.6 * math.sqrt(2), 'angle': math.pi / 4, 'hole': 0.43}),
-    ('rev', 'REV (4x M3, 16mm circle)', {'count': 4, 'circle': 1.6, 'angle': 0.0, 'hole': 0.34}),
+    ('gobilda', 'goBILDA', {'count': 4, 'circle': 1.6 * math.sqrt(2), 'angle': math.pi / 4, 'hole': 0.43}),
+    ('rev', 'REV', {'count': 4, 'circle': 1.6, 'angle': 0.0, 'hole': 0.34}),
     ('custom', 'Custom', None),
 ]
 BORES = [('none', 'None'), ('round', 'Round'), ('hex', 'Hex'), ('hub', 'Hub')]

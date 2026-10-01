@@ -53,7 +53,9 @@ def start():
     cmd_def = common.ui.commandDefinitions.addButtonDefinition(
         CMD_ID, TITLE, 'Dimension a circle as a timing pulley\'s or a spur gear\'s pitch, outside or root diameter.', ICONS)
     common.on(_handlers, cmd_def.commandCreated, adsk.core.CommandCreatedEventHandler, _created, TITLE)
-    panel.get(sketch=True).controls.addCommand(cmd_def)
+    control = panel.get(sketch=True).controls.addCommand(cmd_def)
+    control.isPromotedByDefault = True
+    control.isPromoted = True
     edit_def = common.ui.commandDefinitions.addButtonDefinition(
         EDIT_CMD_ID, 'Edit ' + TITLE, 'Reopen the %s dialog for this circle.' % TITLE, ICONS)
     common.on(_handlers, edit_def.commandCreated, adsk.core.CommandCreatedEventHandler, _edit_created, TITLE)
@@ -132,7 +134,6 @@ def diameter(key, teeth, kind, module=None):
 def _created(args):
     cmd = args.command
     inputs = cmd.commandInputs
-    cmd.setDialogMinimumSize(290, 100)  # wide enough that no label is cut off
     sel = inputs.addSelectionInput('circle', 'Circle', 'Sketch circle to dimension')
     sel.addSelectionFilter('SketchCircles')
     sel.setSelectionLimits(1, 1)

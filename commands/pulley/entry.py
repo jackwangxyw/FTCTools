@@ -35,20 +35,20 @@ SKETCH_CENTERS = (adsk.fusion.SketchPoint.classType(), adsk.fusion.SketchCircle.
 SIZES = [
     ('width', 'Width', 'Width', 'length', '10 mm'),
     ('clearance', 'Clearance', 'Clearance', 'length', '0.05 mm'),
-    ('flange_t', 'FlangeThickness', 'Flange thickness', 'length', '1 mm'),
-    ('flange_h', 'FlangeHeight', 'Flange height', 'length', '1.5 mm'),
-    ('flange_angle', 'FlangeAngle', 'Flange angle', 'angle', '30 deg'),
+    ('flange_t', 'FlangeThickness', 'Thickness', 'length', '1 mm'),
+    ('flange_h', 'FlangeHeight', 'Height', 'length', '1.5 mm'),
+    ('flange_angle', 'FlangeAngle', 'Angle', 'angle', '30 deg'),
     ('bore_d', 'BoreDiameter', 'Bore diameter', 'length', '8 mm'),
     ('hex_af', 'HexWidth', 'Hex width', 'length', '7.15 mm'),
     ('bolt_circle', 'BoltCircle', 'Bolt circle', 'length', '16 mm'),
     ('hole_d', 'HoleDiameter', 'Hole diameter', 'length', '4.3 mm'),
-    ('cb_d', 'CounterboreDiameter', 'Counterbore diameter', 'length', '7.5 mm'),
-    ('cb_depth', 'CounterboreDepth', 'Counterbore depth', 'length', '4 mm'),
+    ('cb_d', 'CounterboreDiameter', 'Head diameter', 'length', '7.5 mm'),
+    ('cb_depth', 'CounterboreDepth', 'Head depth', 'length', '4 mm'),
     ('layer_h', 'BridgeLayerHeight', 'Layer height', 'length', '0.2 mm'),
     ('bearing_od', 'BearingOD', 'Bearing OD', 'length', '14 mm'),
     ('bearing_depth', 'BearingDepth', 'Bearing depth', 'length', '4 mm'),
-    ('hub_d', 'HubRecessDiameter', 'Hub recess diameter', 'length', '22 mm'),
-    ('hub_depth', 'HubRecessDepth', 'Hub recess depth', 'length', '2 mm'),
+    ('hub_d', 'HubRecessDiameter', 'Hub diameter', 'length', '22 mm'),
+    ('hub_depth', 'HubRecessDepth', 'Hub depth', 'length', '2 mm'),
 ]
 # Counts: (id, parameter name, dialog label, min, max, default).
 COUNTS = [('teeth', 'Teeth', 'Teeth', 6, 400, 24), ('hole_count', 'HoleCount', 'Hole count', 1, 16, 4)]
@@ -59,10 +59,10 @@ CHOICES = [
     ('pattern', [(k, l) for k, l, _ in body.PATTERNS]),
 ]
 FLAGS = [('flip', 'Flip direction', False), ('flanges', 'Flanges', True),
-         ('bearing', 'Bearing recess', False), ('bearing_flip', 'Flip bearing side', False),
-         ('counterbore', 'Counterbore holes', False),
-         ('bridging', 'Sequential bridging', False), ('hub_recess', 'Hub recess', False),
-         ('hub_flip', 'Flip hub side', False)]
+         ('bearing', 'Bearing recess', False), ('bearing_flip', 'Flip bearing', False),
+         ('counterbore', 'Counterbores', False),
+         ('bridging', 'Seq. bridging', False), ('hub_recess', 'Hub recess', False),
+         ('hub_flip', 'Flip hub', False)]
 DEFAULTS = dict([(s[0], s[4]) for s in SIZES] + [(c[0], c[5]) for c in COUNTS] + [(f[0], f[2]) for f in FLAGS]
                 + [('profile', 'htd_5'), ('bore', 'round'), ('pattern', 'gobilda')])
 
@@ -147,7 +147,6 @@ def _units(kind):
 
 def _build_inputs(cmd, values):
     inputs = cmd.commandInputs
-    cmd.setDialogMinimumSize(330, 100)  # wide enough that no label is cut off
 
     sel = inputs.addSelectionInput('center', 'Center', 'Sketch point or circle, or any point with a plane')
     for f in ('SketchPoints', 'SketchCircles', 'Vertices', 'ConstructionPoints'):
@@ -192,6 +191,7 @@ def _build_inputs(cmd, values):
     size(g, 'bore_d')
     size(g, 'hex_af')
     dropdown(g, 'pattern', 'Bolt pattern')
+    inputs.itemById('pattern').tooltip = 'goBILDA: 4x M4 on a 16 mm square. REV: 4x M3 on a 16 mm circle.'
     size(g, 'bolt_circle')
     count(g, 'hole_count')
     size(g, 'hole_d')

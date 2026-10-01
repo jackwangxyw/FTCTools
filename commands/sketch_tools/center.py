@@ -53,7 +53,9 @@ def start():
     cmd_def = common.ui.commandDefinitions.addButtonDefinition(
         CMD_ID, 'Center Distance', 'Dimension two points, circles or lines to a belt\'s center distance.', ICONS)
     common.on(_handlers, cmd_def.commandCreated, adsk.core.CommandCreatedEventHandler, _created, 'Center Distance')
-    panel.get(sketch=True).controls.addCommand(cmd_def)
+    control = panel.get(sketch=True).controls.addCommand(cmd_def)
+    control.isPromotedByDefault = True
+    control.isPromoted = True
     edit_def = common.ui.commandDefinitions.addButtonDefinition(
         EDIT_CMD_ID, 'Edit Center Distance', 'Reopen the Center Distance dialog for this dimension.', ICONS)
     common.on(_handlers, edit_def.commandCreated, adsk.core.CommandCreatedEventHandler, _edit_created, 'Center Distance')
@@ -112,7 +114,6 @@ def expression(key, t1, t2, length):
 def _created(args):
     cmd = args.command
     inputs = cmd.commandInputs
-    cmd.setDialogMinimumSize(300, 100)  # wide enough that no label is cut off
     for input_id, label in (('one', 'Pulley 1'), ('two', 'Pulley 2')):
         sel = inputs.addSelectionInput(input_id, label, 'Point, circle (its center) or line')
         for f in ('SketchPoints', 'SketchCircles', 'SketchLines'):
