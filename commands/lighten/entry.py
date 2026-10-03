@@ -49,7 +49,7 @@ POSITIVE = ('wall', 'strut', 'radius')  # minwidth may be 0, meaning off
 
 # The pocket solid starts this far above the face so the cut has no coplanar faces.
 LIFT = 0.001  # cm
-OVERLAY_COLOR = (255, 210, 0)  # preview outline: yellow reads on the blue selection tint and on dark plates
+OVERLAY_COLOR = (255, 255, 255)  # preview outline
 
 _handlers = []
 _feature_def = None
@@ -298,7 +298,8 @@ def _connect_dialog(cmd, preview, execute, destroy):
     _on(cmd.validateInputs, adsk.core.ValidateInputsEventHandler, _validate)
     _on(cmd.preSelect, adsk.core.SelectionEventHandler, _pre_select)
     _on(cmd.select, adsk.core.SelectionEventHandler, _on_select)
-    _on(cmd.executePreview, adsk.core.CommandEventHandler, preview)
+    if preview is not None:
+        _on(cmd.executePreview, adsk.core.CommandEventHandler, preview)
     _on(cmd.execute, adsk.core.CommandEventHandler, execute)
     _on(cmd.destroy, adsk.core.CommandEventHandler, destroy)
 
@@ -465,6 +466,43 @@ def _add_dependencies(add, v):
         add('upto', v['upto'])
 
 
+def _sync_dependencies(feature, v):
+    """Make a live feature's dependencies match v, touching only what changed.
+
+    Every add or delete on a live feature costs about 150 ms, so rewriting all
+    of them made OK take 20 s on a plate with 130 struts. Strut and exclusion
+    ids can end up with gaps; _dependencies only uses them for ordering.
+    """
+    deps = feature.dependencies
+    existing = [deps.item(i) for i in range(deps.count)]
+    for dep_id, entity in (('face', v['face']), ('upto', v['upto'])):
+        dep = deps.itemById(dep_id)
+        if entity is None:
+            if dep is not None:
+                dep.deleteMe()
+        elif dep is None:
+            deps.add(dep_id, entity)
+        elif dep.entity is None or dep.entity.entityToken != entity.entityToken:
+            dep.entity = entity
+    for prefix, key in (('strut', 'struts'), ('exclude', 'exclude')):
+        wanted = {e.entityToken: e for e in _unique(v[key])}
+        kept = set()
+        top = -1
+        for dep in existing:
+            if not dep.id.startswith(prefix):
+                continue
+            top = max(top, int(dep.id[len(prefix):]))
+            token = dep.entity.entityToken if dep.entity is not None else None
+            if token in wanted and token not in kept:
+                kept.add(token)
+            else:
+                dep.deleteMe()
+        for token, entity in wanted.items():
+            if token not in kept:
+                top += 1
+                deps.add('%s%d' % (prefix, top), entity)
+
+
 def _evaluate(v):
     um = _design().unitsManager
     units = um.defaultLengthUnits
@@ -493,7 +531,8 @@ def _edit_created(args):
 
     cmd = args.command
     _build_inputs(cmd, values)
-    _connect_dialog(cmd, _edit_preview, _edit_execute, _edit_destroy)
+    # The preview is subscribed in activate, once the inputs are reselected.
+    _connect_dialog(cmd, None, _edit_execute, _edit_destroy)
     _on(cmd.activate, adsk.core.CommandEventHandler, _edit_activate)
 
 
@@ -506,8 +545,6 @@ def _roll_before(feature):
 
 
 def _edit_preview(args):
-    if _edit.get('populating'):
-        return  # activate is still reselecting; it draws one preview when done
     _roll_before(_edit['feature'])
     if _edit.pop('focus_pending', False):
         app.fireCustomEvent(FOCUS_EVENT_ID)
@@ -524,8 +561,10 @@ def _edit_activate(args):
 
     inputs = args.command.commandInputs
     face, struts, exclude, upto = _dependencies(feature, skip_lost=True)
-    # Every addSelection fires validate and preview; skip the previews until
-    # all of them are back, then draw one.
+    # Every addSelection fires inputChanged and validate, and a preview when one
+    # is subscribed. Fusion's own work for each preview cost about 30 ms per
+    # selection even with a handler that returned at once (4.6 s for 130 struts),
+    # so the preview is only subscribed after the reselect and drawn once.
     _edit['populating'] = True
     try:
         for input_id, entities in (('face', [face] if face is not None else []),
@@ -535,6 +574,7 @@ def _edit_activate(args):
                 inputs.itemById(input_id).addSelection(entity)
     finally:
         _edit['populating'] = False
+    _on(args.command.executePreview, adsk.core.CommandEventHandler, _edit_preview)
     # Fusion assigns focus itself after activate returns, and a focus change
     # made inside a preview is undone with the preview. So the first preview
     # queues a custom event, which runs after the preview has finished.
@@ -554,18 +594,23 @@ def _edit_execute(args):
 
     # The timeline is still rolled back to before this feature, so these
     # changes cost one recompute when it rolls forward, not one each.
-    feature.dependencies.deleteAll()
-    _add_dependencies(feature.dependencies.add, v)
+    _sync_dependencies(feature, v)
+    # Each write costs time on a live feature even when the value is the same.
     for key, _, _ in LENGTHS:
         param = feature.parameters.itemById(key)
         if param:
-            param.expression = v[key]
+            if param.expression != v[key]:
+                param.expression = v[key]
         elif _evaluate(v)[key] != 0:
             # Custom parameters can only be added when a feature is created.
             ui.messageBox('This Lighten was made before %s existed. Delete it and create it again to use that.'
                           % key, 'Lighten')
-    feature.parameters.itemById('depth').isVisible = v['extent'] == 'distance'
-    feature.parameters.itemById('extent').value = _extent_index(v['extent'])
+    depth = feature.parameters.itemById('depth')
+    if depth.isVisible != (v['extent'] == 'distance'):
+        depth.isVisible = v['extent'] == 'distance'
+    extent = feature.parameters.itemById('extent')
+    if extent.value != _extent_index(v['extent']):
+        extent.value = _extent_index(v['extent'])
 
     new_body = _native(v['face']).body
     if old_face is None or new_body != _native(old_face).body:
