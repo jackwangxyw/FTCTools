@@ -528,12 +528,34 @@ def _edit_created(args):
     # (whose changes Fusion undoes) can't undo the roll with them.
     _roll_before(feature)
     _edit['rolled'] = True
+    _edit['shown'] = _show_sketches(feature)
 
     cmd = args.command
     _build_inputs(cmd, values)
     # The preview is subscribed in activate, once the inputs are reselected.
     _connect_dialog(cmd, None, _edit_execute, _edit_destroy)
     _on(cmd.activate, adsk.core.CommandEventHandler, _edit_activate)
+
+
+def _show_sketches(feature):
+    """Turn on the sketches the feature's struts and exclusions are in, as
+    Fusion does for an extrude's profile sketch. Returns (object, property)
+    pairs to turn back off when the dialog closes."""
+    _, struts, exclude, _ = _dependencies(feature, skip_lost=True)
+    sketches = {}
+    for e in struts + exclude:
+        sketch = _native(e).parentSketch
+        sketches[sketch.entityToken] = sketch
+    shown = []
+    for sketch in sketches.values():
+        comp = sketch.parentComponent
+        if not comp.isSketchFolderLightBulbOn:
+            comp.isSketchFolderLightBulbOn = True
+            shown.append((comp, 'isSketchFolderLightBulbOn'))
+        if not sketch.isLightBulbOn:
+            sketch.isLightBulbOn = True
+            shown.append((sketch, 'isLightBulbOn'))
+    return shown
 
 
 def _roll_before(feature):
@@ -625,6 +647,8 @@ def _edit_destroy(args):
     # Cancel leaves the timeline rolled back; put it where the user had it.
     _end_dialog()
     _restore_timeline()
+    for obj, prop in _edit.get('shown', []):
+        setattr(obj, prop, False)
     _edit.clear()
 
 
