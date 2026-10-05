@@ -29,7 +29,7 @@ import os
 import adsk.core
 import adsk.fusion
 
-from .. import panel
+from .. import links, panel
 from ..belt import body as belt_body
 from ..pulley import profiles
 from ..pulley.profiles import PulleyError
@@ -297,6 +297,14 @@ def apply(v):
         dim.parameter.expression = name
     except RuntimeError as e:
         raise SketchToolError('Could not dimension them (are they already constrained?):\n%s' % e)
+    # Belts made on this center distance follow its belt parameter: move them
+    # to the new mode or pitch before the old parameter goes (Fusion won't
+    # delete a parameter something references).
+    made = common.design().attributes.itemByName(common.ATTR_GROUP, CC_ATTR + name)
+    if made is not None:
+        made = json.loads(made.value)
+        links.relink(belt_link(name, made['profile'], made['mode']), belt_link(name, v['profile'], v['mode']))
+    links.push_profile(belt_link(name, v['profile'], v['mode']), v['profile'])
     # Switching between belt teeth and length leaves the other one unused.
     old = params.itemByName(unused)
     if old is not None:
@@ -319,6 +327,37 @@ def _length(name, key, mode):
     return name + '_BeltLength'
 
 
+def belt_link(name, key, mode):
+    """The belt tooth-count expression a Belt on center distance `name`
+    follows. A belt length becomes the nearest whole number of teeth."""
+    if mode == 'teeth':
+        return name + '_BeltTeeth'
+    return 'round(%s_BeltLength / %s)' % (name, common.mm(profiles.profile(key)['pitch']))
+
+
+def between(one, two):
+    """The center distance dimensioned between two picks (points or circles),
+    as (name, profile, mode, [tooth-count expression of each pick]), or None."""
+    kinds = (adsk.fusion.SketchPoint.classType(), adsk.fusion.SketchCircle.classType())
+    if one is None or two is None or one.objectType not in kinds or two.objectType not in kinds:
+        return None
+    try:
+        a, b = _targets(one, two)
+    except SketchToolError:
+        return None
+    dim = _existing_dimension(a, b)
+    name = _our_name(dim)
+    if name is None:
+        return None
+    made = json.loads(common.design().attributes.itemByName(common.ATTR_GROUP, CC_ATTR + name).value)
+    first = _dimension_entities(dim)[0]
+    teeth = []
+    for point in (a, b):
+        tag = common.pulley_tag(point)
+        teeth.append(tag['teeth'] if tag else '%s_Teeth%d' % (name, 1 if point == first else 2))
+    return name, made['profile'], made['mode'], teeth
+
+
 def users(circle):
     """Names of the center distances dimensioned to a circle's center."""
     point = common.native(circle).centerSketchPoint
@@ -326,10 +365,33 @@ def users(circle):
             if _our_name(dim) and point in _dimension_entities(dim)]
 
 
+def chain(circle):
+    """The Pulley & Gear Diameter circles joined to `circle` through center
+    distances, directly or through other circles, and `circle` itself."""
+    circle = common.native(circle)
+    sketch = circle.parentSketch
+    dims = [_dimension_entities(dim) for dim in sketch.sketchDimensions if _our_name(dim)]
+    joined, todo = [circle], [circle]
+    while todo:
+        point = todo.pop().centerSketchPoint
+        for ends in dims:
+            if point not in ends:
+                continue
+            other = ends[1] if ends[0] == point else ends[0]
+            found = next((c for c in sketch.sketchCurves.sketchCircles
+                          if c.centerSketchPoint == other and common.pulley_tag(c)), None)
+            if found is not None and found not in joined:
+                joined.append(found)
+                todo.append(found)
+    return joined
+
+
 def follow_profile(circle, key):
-    """Rebuild the center distances on a circle whose Pulley & Gear Diameter profile
-    changed to `key`, so they use its pitch. Tooth and belt counts stay."""
+    """Rebuild the center distances on a circle whose Pulley & Gear Diameter tag
+    changed to profile `key` or was just added, so they use its pitch and its
+    tooth-count parameter. Tooth and belt counts stay."""
     point = common.native(circle).centerSketchPoint
+    params = common.design().userParameters
     for dim in point.parentSketch.sketchDimensions:
         name = _our_name(dim)
         ends = _dimension_entities(dim)
@@ -338,10 +400,24 @@ def follow_profile(circle, key):
         attr = common.design().attributes.itemByName(common.ATTR_GROUP, CC_ATTR + name)
         made = json.loads(attr.value)
         teeth = []
+        replaced = []   # this dimension's own tooth counts, now a tagged circle's
         for index, entity in enumerate(ends, 1):
             tag = common.pulley_tag(entity)
-            teeth.append(tag['teeth'] if tag else '%s_Teeth%d' % (name, index))
+            own = '%s_Teeth%d' % (name, index)
+            teeth.append(tag['teeth'] if tag else own)
+            if tag:
+                replaced.append((own, tag['teeth']))
         common.set_param(name, expression(key, teeth[0], teeth[1], _length(name, key, made['mode'])), 'mm')
+        # Belts on it follow the new pitch and tooth parameters; then the
+        # replaced ones are unreferenced and can go.
+        links.relink(belt_link(name, made['profile'], made['mode']), belt_link(name, key, made['mode']))
+        for own, tagged in replaced:
+            links.relink(own, tagged)
+            old = params.itemByName(own)
+            if old is not None:
+                old.deleteMe()
+        for t in teeth:
+            links.push_profile(t, key)
         made['profile'] = key
         attr.value = json.dumps(made)
 

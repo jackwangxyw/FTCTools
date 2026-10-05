@@ -30,7 +30,7 @@ import os
 import adsk.core
 import adsk.fusion
 
-from .. import panel
+from .. import links, panel
 from ..pulley import profiles
 from . import center, common
 from .common import SketchToolError
@@ -217,8 +217,9 @@ def param_base(key, teeth, module=None):
     return '%s_%dT' % (SHORT[key], int(teeth))
 
 
-def apply(circle, key, teeth, kind, module=None):
-    """module (cm) is for gears only."""
+def apply(circle, key, teeth, kind, module=None, chain=True):
+    """module (cm) is for gears only. chain=False leaves the circles joined to
+    this one by center distances alone (the caller is switching them)."""
     tag = common.pulley_tag(circle)
     if key == common.GEAR and center.users(circle):
         raise SketchToolError('Center distance %s runs a belt on this circle, so it can\'t be a gear.'
@@ -252,8 +253,23 @@ def apply(circle, key, teeth, kind, module=None):
     if key == common.GEAR:
         new_tag['module'] = module
     common.set_pulley_tag(circle, new_tag)
-    if tag is not None and tag['profile'] != key:
-        center.follow_profile(circle, key)  # center distances on it switch to the new pitch
+    # Pulleys made on this circle follow its tooth parameter (and Fusion
+    # renamed their expressions with it); bring their profile along too.
+    if key == common.GEAR:
+        links.unlink(teeth_param)  # a gear drives no pulley
+    elif tag is None or tag['profile'] != key:
+        links.push_profile(teeth_param, key)
+    if chain and (tag is None or tag['profile'] != key) and center.users(circle):
+        # One belt profile runs through every circle joined by center
+        # distances: switch them all, then rebuild the center distances.
+        joined = center.chain(circle)
+        for other in joined:
+            other_tag = common.pulley_tag(other)
+            if other != circle and other_tag['profile'] != key:
+                count = params.itemByName(other_tag['teeth']).value
+                apply(other, key, int(round(count)), other_tag['kind'], chain=False)
+        for c in joined:
+            center.follow_profile(c, key)
     return dim
 
 

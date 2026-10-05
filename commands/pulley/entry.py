@@ -9,12 +9,14 @@ so moving the point moves the pulley.
 
 import json
 import os
+import re
 import traceback
 
 import adsk.core
 import adsk.fusion
 
-from .. import panel
+from .. import links, panel
+from ..sketch_tools import common as sketch_common
 from . import body, profiles
 from .profiles import PulleyError
 
@@ -30,6 +32,9 @@ SHORT_NAMES = {'gt2_2': 'GT2-2', 'gt2_3': 'GT2-3', 'htd_3': 'HTD3', 'htd_5': 'HT
 OVERLAY_COLOR = (255, 210, 0)
 SKETCH_CENTERS = (adsk.fusion.SketchPoint.classType(), adsk.fusion.SketchCircle.classType(),
                   adsk.fusion.SketchArc.classType())
+# Picks that bring their own plane: a circular edge or arc, or a planar face
+# bounded by one (the end of a hub), stand for its center and plane.
+CIRCULAR = (adsk.fusion.BRepEdge.classType(), adsk.fusion.BRepFace.classType())
 
 # Sized parameters: (id, parameter name, dialog label, units kind, default).
 SIZES = [
@@ -148,8 +153,8 @@ def _units(kind):
 def _build_inputs(cmd, values):
     inputs = cmd.commandInputs
 
-    sel = inputs.addSelectionInput('center', 'Center', 'Sketch point or circle, or any point with a plane')
-    for f in ('SketchPoints', 'SketchCircles', 'Vertices', 'ConstructionPoints'):
+    sel = inputs.addSelectionInput('center', 'Center', 'Sketch point or circle, circular edge or face, or any point with a plane')
+    for f in ('SketchPoints', 'SketchCircles', 'CircularEdges', 'PlanarFaces', 'Vertices', 'ConstructionPoints'):
         sel.addSelectionFilter(f)
     sel.setSelectionLimits(1, 1)
     sel = inputs.addSelectionInput('plane', 'Plane', 'Plane or face the pulley starts on (optional for sketch points)')
@@ -176,6 +181,7 @@ def _build_inputs(cmd, values):
 
     dropdown(inputs, 'profile', 'Profile')
     count(inputs, 'teeth')
+    inputs.addTextBoxCommandInput('link', 'Link', '', 1, True).isVisible = False
     size(inputs, 'width')
     size(inputs, 'clearance')
     inputs.itemById('clearance').tooltip = 'Groove grows by this on every side, for print fit.'
@@ -269,7 +275,18 @@ def _read_inputs(inputs):
         v[c[0]] = inputs.itemById(c[0]).value
     for f in FLAGS:
         v[f[0]] = inputs.itemById(f[0]).value
+    v['teeth_link'] = _teeth_link(v)
     return v
+
+
+def _teeth_link(v):
+    """The tooth-count parameter of the Pulley & Gear Diameter circle picked as
+    the center, while the dialog matches it (profile and count), else None.
+    The pulley's teeth follow it; a different count stands on its own."""
+    tag = sketch_common.pulley_tag(v['center'])
+    if tag is None or tag['profile'] != v['profile']:
+        return None
+    return tag['teeth'] if links.evaluate(tag['teeth']) == v['teeth'] else None
 
 
 def _options(v):
@@ -292,7 +309,7 @@ def _validate(args):
     inputs = args.inputs
     center = _selection(inputs, 'center')
     ok = center is not None
-    if ok and center.objectType not in SKETCH_CENTERS:
+    if ok and center.objectType not in SKETCH_CENTERS + CIRCULAR:
         ok = inputs.itemById('plane').selectionCount == 1
     for input_id, _, _, _, _ in SIZES:
         i = inputs.itemById(input_id)
@@ -306,14 +323,32 @@ def _validate(args):
 
 
 def _on_select(args):
-    # After the center is picked, a plane is only needed for non-sketch points.
-    if args.activeInput.id == 'center' and args.selection.entity.objectType not in SKETCH_CENTERS:
-        args.activeInput.parentCommand.commandInputs.itemById('plane').hasFocus = True
+    if args.activeInput.id != 'center' or _edit.get('populating'):
+        return
+    inputs = args.activeInput.parentCommand.commandInputs
+    entity = args.selection.entity
+    # A Pulley & Gear Diameter circle: take its profile and tooth count.
+    tag = sketch_common.pulley_tag(entity)
+    if tag is not None and tag['profile'] != sketch_common.GEAR:
+        label = next(l for k, l in dict(CHOICES)['profile'] if k == tag['profile'])
+        for item in inputs.itemById('profile').listItems:
+            item.isSelected = item.name == label
+        inputs.itemById('teeth').value = int(round(links.evaluate(tag['teeth'])))
+    # After the center is picked, a plane is only needed for a bare point.
+    if entity.objectType not in SKETCH_CENTERS + CIRCULAR:
+        inputs.itemById('plane').hasFocus = True
+
+
+def _pre_select(args):
+    # Planar faces are only centers when their boundary is circular.
+    if args.activeInput.id == 'center' and args.selection.entity.objectType == adsk.fusion.BRepFace.classType():
+        args.isSelectable = circle_of(_native(args.selection.entity)) is not None
 
 
 def _connect_dialog(cmd, preview, execute, destroy):
     _on(cmd.inputChanged, adsk.core.InputChangedEventHandler, _input_changed)
     _on(cmd.validateInputs, adsk.core.ValidateInputsEventHandler, _validate)
+    _on(cmd.preSelect, adsk.core.SelectionEventHandler, _pre_select)
     _on(cmd.select, adsk.core.SelectionEventHandler, _on_select)
     _on(cmd.executePreview, adsk.core.CommandEventHandler, preview)
     _on(cmd.execute, adsk.core.CommandEventHandler, execute)
@@ -328,6 +363,9 @@ def _draw_preview(inputs):
     """Outline the pulley solid's edges. Inputs that can't make a pulley show nothing."""
     _clear_overlay()
     v = _read_inputs(inputs)
+    link = inputs.itemById('link')
+    link.isVisible = v['teeth_link'] is not None
+    link.text = v['teeth_link'] or ''
     try:
         comp, frame = _placement(v['center'], v['plane'])
         solid = _solid(_options(v), frame)
@@ -383,21 +421,66 @@ def _pulley_name(key, teeth):
     return '%s %dT' % (SHORT_NAMES[key], teeth)
 
 
-def _create_feature(v, parent, solid):
-    """New component under the placement's component, holding the pulley feature.
+# Names the tools give components, bodies and features (a Pulley's or a
+# Belt's), with the " (1)" Fusion adds to a duplicate name; and Fusion's own
+# default feature names.
+AUTO_NAME = re.compile(r'^(?:%s) \d+T(?: Belt)?(?: \(\d+\))?$' % '|'.join(map(re.escape, SHORT_NAMES.values())))
+DEFAULT_FEATURE_NAME = re.compile(r'^(?:Pulley|Belt)\d*$')
 
-    The new occurrence has an identity transform, so the new component's space
-    is the parent's space and the solid needs no further transform."""
+
+def solid_body(feature):
+    """The body a Pulley or Belt feature makes (outside its compute: there the
+    base feature's bodies are only reachable between startEdit and finishEdit)."""
+    base = next(f for f in feature.features if f.objectType == adsk.fusion.BaseFeature.classType())
+    return base.bodies.item(0)
+
+
+def free_body_name(comp, name, body=None):
+    """name, or name (2), (3), ... if another body in comp has it: Fusion
+    silently keeps the old name when a body is given a taken one."""
+    taken = {b.name for b in comp.bRepBodies if b != body}
+    candidate, n = name, 2
+    while candidate in taken:
+        candidate = '%s (%d)' % (name, n)
+        n += 1
+    return candidate
+
+
+def follow_name(feature, body, name):
+    """Name a feature's component, body and timeline item for what it now is
+    (linked counts and profiles change without an edit), unless the user
+    named them."""
+    def stale(current):
+        return AUTO_NAME.match(current) and re.sub(r' \(\d+\)$', '', current) != name
+    if stale(body.name):
+        body.name = free_body_name(body.parentComponent, name, body)
+    comp = feature.parentComponent
+    if comp != _design().rootComponent and stale(comp.name):
+        comp.name = name
+    if stale(feature.name) or (DEFAULT_FEATURE_NAME.match(feature.name) and feature.name != name):
+        feature.name = name
+
+
+def new_component(parent, name):
+    """A new component under parent for one Pulley or Belt. Its occurrence
+    has an identity transform, so its space is parent's space."""
     occ = parent.occurrences.addNewComponent(adsk.core.Matrix3D.create())
-    comp = occ.component
-    comp.name = _pulley_name(v['profile'], v['teeth'])
+    occ.component.name = name
+    return occ
 
+
+
+def _create_feature(v, parent, solid):
+    """A new component under the placement's component, holding the pulley
+    feature; the solid is already in that space."""
+    title = _pulley_name(v['profile'], v['teeth'])
+    occ = new_component(parent, title)
+    comp = occ.component
     base = comp.features.baseFeatures.add()
     base.startEdit()
-    solid_body = comp.bRepBodies.add(solid, base)
+    comp.bRepBodies.add(solid, base).name = free_body_name(comp, title)
     base.finishEdit()
     base.name = 'Pulley Body'
-    solid_body.name = comp.name
 
     relevant = _relevant(v)
     cf_input = comp.features.customFeatures.createInput(_feature_def)
@@ -405,8 +488,9 @@ def _create_feature(v, parent, solid):
         cf_input.addCustomParameter(input_id, name, adsk.core.ValueInput.createByString(v[input_id]),
                                     _units(kind), relevant.get(input_id, True))
     for input_id, name, _, _, _, _ in COUNTS:
-        cf_input.addCustomParameter(input_id, name, adsk.core.ValueInput.createByReal(v[input_id]), '',
-                                    relevant.get(input_id, True))
+        link = v.get('teeth_link') if input_id == 'teeth' else None
+        value = adsk.core.ValueInput.createByString(link) if link else adsk.core.ValueInput.createByReal(v[input_id])
+        cf_input.addCustomParameter(input_id, name, value, '', relevant.get(input_id, True))
     # Choices and on/off switches live in hidden parameters so compute can read
     # them even during customFeatures.add, before any other state could be stored.
     for input_id, items in CHOICES:
@@ -420,9 +504,11 @@ def _create_feature(v, parent, solid):
     # holds exactly this solid, so that compute is skipped.
     _creating[0] = True
     try:
-        return comp.features.customFeatures.add(cf_input)
+        feature = comp.features.customFeatures.add(cf_input)
     finally:
         _creating[0] = False
+    feature.name = title
+    return feature
 
 
 def _add_dependencies(add, v):
@@ -532,7 +618,10 @@ def _edit_execute(args):
         if param is None:
             missing.append(input_id)
             continue
-        param.value = v[input_id]
+        if input_id == 'teeth':
+            param.expression = v['teeth_link'] or str(int(v['teeth']))
+        else:
+            param.value = v[input_id]
         param.isVisible = relevant.get(input_id, True)
     for input_id, items in CHOICES:
         param = p.itemById(input_id)
@@ -549,7 +638,7 @@ def _edit_execute(args):
     if missing:
         ui.messageBox('This pulley was made with an older version of the tool, so these settings were '
                       'not saved: %s. Delete it and create it again to use them.' % ', '.join(missing), 'Pulley')
-    feature.parentComponent.name = _pulley_name(v['profile'], v['teeth'])
+    links.push_profile(p.itemById('teeth').name, v['profile'])  # belts following this pulley
 
     _restore_timeline()
     _save_settings(v)
@@ -583,10 +672,14 @@ def _compute(args):
         base = next(f for f in feature.features if f.objectType == adsk.fusion.BaseFeature.classType())
         center, plane = _dependencies(feature)
         _, frame = _placement(center, plane)
-        solid = _solid(_feature_options(feature), frame)
+        o = _feature_options(feature)
+        solid = _solid(o, frame)
         base.startEdit()
         try:
-            updated = base.updateBody(base.bodies.item(0), solid)
+            body_ = base.bodies.item(0)
+            updated = base.updateBody(body_, solid)
+            if updated:
+                follow_name(feature, body_, _pulley_name(o['profile'], o['teeth']))
         finally:
             base.finishEdit()
         if not updated:
@@ -642,46 +735,134 @@ def _native(entity):
 
 
 def _other_copy(a, b):
-    """a and b were picked in different copies (occurrences) of the same component."""
-    return bool(a.assemblyContext and b.assemblyContext
-                and a.assemblyContext.fullPathName != b.assemblyContext.fullPathName)
+    """Occurrences a and b (None: no assembly context) are different copies
+    of the same component."""
+    return bool(a and b and a.fullPathName != b.fullPathName)
 
 
 def _owner(native):
     t = native.objectType
     if t in SKETCH_CENTERS:
         return native.parentSketch.parentComponent
-    if t in (adsk.fusion.BRepVertex.classType(), adsk.fusion.BRepFace.classType()):
+    if t in (adsk.fusion.BRepVertex.classType(), adsk.fusion.BRepEdge.classType(), adsk.fusion.BRepFace.classType()):
         return native.body.parentComponent
     return native.component  # construction point or plane
+
+
+def circle_of(native):
+    """(center, normal) of a circular edge or arc, or of a planar face whose
+    outer boundary is arcs around one center, in its component's space; else None."""
+    arcs = (adsk.core.Circle3D.classType(), adsk.core.Arc3D.classType())
+    t = native.objectType
+    if t == adsk.fusion.BRepEdge.classType():
+        g = native.geometry
+        return (g.center, g.normal) if g.objectType in arcs else None
+    if t != adsk.fusion.BRepFace.classType() or native.geometry.objectType != adsk.core.Plane.classType():
+        return None
+    loop = next(l for l in native.loops if l.isOuter)
+    edges = [e.geometry for e in loop.edges]
+    if any(g.objectType not in arcs for g in edges):
+        return None
+    c = edges[0].center
+    if any(g.center.distanceTo(c) > 1e-6 for g in edges):
+        return None
+    return c, native.geometry.normal
+
+
+def center_point(native):
+    """A center pick's point in its component's space."""
+    t = native.objectType
+    if t == adsk.fusion.SketchPoint.classType():
+        return native.worldGeometry
+    if t in SKETCH_CENTERS:
+        return native.centerSketchPoint.worldGeometry
+    if t in CIRCULAR:
+        return circle_of(native)[0]
+    return native.geometry
+
+
+def _outward(native):
+    """A circular pick's plane normal, pointing out of the body: a face's own
+    outward normal, or for an edge that of a planar face it bounds."""
+    faces = [native] if native.objectType == adsk.fusion.BRepFace.classType() else list(native.faces)
+    normal = circle_of(native)[1]
+    normal.normalize()
+    for face in faces:
+        if face.geometry.objectType == adsk.core.Plane.classType():
+            _, n = face.evaluator.getNormalAtPoint(face.pointOnFace)
+            n.normalize()
+            if abs(abs(n.dotProduct(normal)) - 1) < 1e-6:
+                return n
+    return normal
+
+
+def _space(entity):
+    """Where a pulley picked on entity goes: (component, that component's
+    occurrence in the pick's assembly path or None, transforms taking the
+    entity's own component space to that component's space).
+
+    Normally the component that owns the entity. Nothing can be added inside
+    a component linked from another design (an imported goBILDA part), so a
+    pick inside one goes in the component holding the outermost linked
+    occurrence."""
+    leaf = entity.assemblyContext
+    outer = None
+    occ = leaf
+    while occ is not None:
+        if occ.isReferencedComponent:
+            outer = occ
+        occ = occ.assemblyContext
+    if outer is None:
+        return _owner(_native(entity)), leaf, []
+    parent = outer.assemblyContext
+    steps = [leaf.transform2]   # to root
+    if parent is not None:
+        to_parent = parent.transform2.copy()
+        to_parent.invert()
+        steps.append(to_parent)
+    return (parent.component if parent is not None else _design().rootComponent), parent, steps
+
+
+def _moved(geometry, steps):
+    geometry = geometry.copy()
+    for m in steps:
+        geometry.transformBy(m)
+    return geometry
 
 
 def _placement(center, plane):
     """(component, (origin, x, y, z)) with the frame in that component's space.
 
-    The component is the one that owns the center, and the pulley goes in a
-    new component under it. With a sketch center and no plane, the frame is
-    the sketch's; otherwise the plane's, with the center projected onto it.
+    The pulley goes in a new component under that component (see _space).
+    Without a plane, a sketch center uses the sketch's frame and a circular
+    edge or face its own plane; otherwise the plane's frame, with the center
+    projected onto it.
     """
     if center is None:
         raise PulleyError('Pick a center.')
     native = _native(center)
-    comp = _owner(native)
+    comp, comp_occ, steps = _space(center)
     t = native.objectType
-    if t == adsk.fusion.SketchPoint.classType():
-        origin = native.worldGeometry
-    elif t in SKETCH_CENTERS:
-        origin = native.centerSketchPoint.worldGeometry
-    else:
-        origin = native.geometry
+    origin = _moved(center_point(native), steps)
 
     if plane is None:
-        if t not in SKETCH_CENTERS:
-            raise PulleyError('Pick a plane for a point that is not in a sketch.')
-        _, x, y, z = native.parentSketch.transform.getAsCoordinateSystem()
-        return comp, (origin, x, y, z)
+        if t in SKETCH_CENTERS:
+            _, x, y, z = native.parentSketch.transform.getAsCoordinateSystem()
+        elif t in CIRCULAR:
+            z = _outward(native)
+            # Any x in the plane does; take world x (or y) flattened onto it.
+            ref = adsk.core.Vector3D.create(1, 0, 0) if abs(z.x) < 0.9 else adsk.core.Vector3D.create(0, 1, 0)
+            along = z.copy()
+            along.scaleBy(ref.dotProduct(z))
+            x = ref
+            x.subtract(along)
+            x.normalize()
+            y = z.crossProduct(x)
+        else:
+            raise PulleyError('Pick a plane for a point that is not in a sketch or on a circular edge.')
+        return comp, (origin, _moved(x, steps), _moved(y, steps), _moved(z, steps))
 
-    geom = _plane_in(plane, center, comp)
+    geom = _plane_in(plane, comp, comp_occ)
     z = geom.normal.copy()
     z.normalize()
     dist = geom.origin.vectorTo(origin).dotProduct(z)
@@ -695,9 +876,10 @@ def _placement(center, plane):
     return comp, (origin, x, y, z)
 
 
-def _plane_in(plane, center, comp):
-    """Plane geometry in comp's space. A face's normal points out of its body,
-    so the pulley builds outward from a face."""
+def _plane_in(plane, comp, comp_occ):
+    """Plane geometry in the space of comp (whose occurrence in the center's
+    assembly path is comp_occ). A face's normal points out of its body, so the
+    pulley builds outward from a face."""
     native = _native(plane)
     geom = native.geometry.copy()
     if native.objectType == adsk.fusion.BRepFace.classType():
@@ -705,7 +887,7 @@ def _plane_in(plane, center, comp):
         geom.normal = n
     owner = _owner(native)
     if owner == comp:
-        if _other_copy(plane, center):
+        if _other_copy(plane.assemblyContext, comp_occ):
             raise PulleyError('The plane is in another copy of %s than the center. The pulley goes in %s, '
                               'so every copy gets one: pick both in the same copy.' % (comp.name, comp.name))
         return geom
@@ -714,8 +896,8 @@ def _plane_in(plane, center, comp):
         geom.transformBy(plane.assemblyContext.transform2)
     elif owner != _design().rootComponent:
         raise PulleyError('Pick the plane in the assembly, not inside another component.')
-    if center.assemblyContext:
-        to_comp = center.assemblyContext.transform2.copy()
+    if comp_occ is not None:
+        to_comp = comp_occ.transform2.copy()
         to_comp.invert()
         geom.transformBy(to_comp)
     return geom

@@ -72,6 +72,27 @@ def center_distance(key, belt_teeth, t1, t2):
     return (lo + hi) / 2
 
 
+def nearest_teeth(key, C, t1, t2):
+    """The whole number of belt teeth whose center distance is closest to C."""
+    spec = profiles.profile(key)
+    r1, r2 = pitch_radius(spec, t1), pitch_radius(spec, t2)
+    if C <= abs(r2 - r1):
+        raise PulleyError('The pulleys are too close together for a belt.')
+    exact = _length(C, r1, r2) / spec['pitch']
+    best = None
+    # Center distance grows with belt teeth, so the nearest is on one side or the other.
+    for n in (math.floor(exact), math.ceil(exact)):
+        try:
+            gap = abs(center_distance(key, n, t1, t2) - C)
+        except PulleyError:
+            continue
+        if best is None or gap < best[1]:
+            best = (n, gap)
+    if best is None:
+        raise PulleyError('The pulleys are too close together for a belt.')
+    return best[0]
+
+
 def _path(C, r1, r2):
     """Pitch-line segments, counterclockwise from pulley 1's upper tangent point:
     ('arc', center, radius, start angle, end angle) or ('line', start, end)."""
