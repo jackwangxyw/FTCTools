@@ -39,6 +39,17 @@ def referencing(expr):
     return [(f, p) for f in features() for p in f.parameters if p.expression == expr]
 
 
+def param(feature, param_id):
+    """A feature's custom parameter by id, or None if it hasn't got one.
+    Features made by an older version lack newer parameters, and itemById
+    raises for those instead of returning None."""
+    params = feature.parameters
+    for i in range(params.count):
+        if params.item(i).id == param_id:
+            return params.item(i)
+    return None
+
+
 def evaluate(expr):
     """A unitless link expression's current value. (isValidExpression says a
     bare parameter name is invalid, though it evaluates fine.)"""

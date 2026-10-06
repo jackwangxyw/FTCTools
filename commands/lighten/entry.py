@@ -330,7 +330,7 @@ def _show_overlay(face, pockets):
 
     points = []
     indices = []
-    for edge in pockets.edges:
+    for edge in geometry.body_edges(pockets):
         _, t0, t1 = edge.evaluator.getParameterExtents()
         _, strokes = edge.evaluator.getStrokes(t0, t1, 0.002)  # cm chord error; arcs stay round
         start = len(points) // 3

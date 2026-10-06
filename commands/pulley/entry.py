@@ -7,6 +7,7 @@ accepts expressions. The center point (and optional plane) are dependencies,
 so moving the point moves the pulley.
 """
 
+import collections
 import json
 import os
 import re
@@ -17,6 +18,7 @@ import adsk.fusion
 
 from .. import links, panel
 from ..sketch_tools import common as sketch_common
+from ..lighten.geometry import body_edges
 from . import body, profiles
 from .profiles import PulleyError
 
@@ -276,6 +278,7 @@ def _read_inputs(inputs):
     for f in FLAGS:
         v[f[0]] = inputs.itemById(f[0]).value
     v['teeth_link'] = _teeth_link(v)
+    v['follow'] = v['teeth_link'] is None and _follows(v)
     return v
 
 
@@ -287,6 +290,16 @@ def _teeth_link(v):
     if tag is None or tag['profile'] != v['profile']:
         return None
     return tag['teeth'] if links.evaluate(tag['teeth']) == v['teeth'] else None
+
+
+def _follows(v):
+    """Whether the pulley follows a circle from a sketch derived from another
+    design, where there is no tooth parameter to link to: compute reads the
+    count from the circle (_follow_circle). Same rule as a link: the dialog
+    matches the circle."""
+    circle, tag = sketch_common.derived_tag(v['center'])
+    return (tag is not None and tag['profile'] == v['profile']
+            and sketch_common.circle_teeth(circle, tag) == v['teeth'])
 
 
 def _options(v):
@@ -327,13 +340,19 @@ def _on_select(args):
         return
     inputs = args.activeInput.parentCommand.commandInputs
     entity = args.selection.entity
-    # A Pulley & Gear Diameter circle: take its profile and tooth count.
+    # A Pulley & Gear Diameter circle: take its profile and tooth count (from
+    # the geometry for a circle in a derived sketch).
     tag = sketch_common.pulley_tag(entity)
     if tag is not None and tag['profile'] != sketch_common.GEAR:
+        teeth = int(round(links.evaluate(tag['teeth'])))
+    else:
+        circle, tag = sketch_common.derived_tag(entity)
+        teeth = sketch_common.circle_teeth(circle, tag) if tag else None
+    if teeth is not None:
         label = next(l for k, l in dict(CHOICES)['profile'] if k == tag['profile'])
         for item in inputs.itemById('profile').listItems:
             item.isSelected = item.name == label
-        inputs.itemById('teeth').value = int(round(links.evaluate(tag['teeth'])))
+        inputs.itemById('teeth').value = teeth
     # After the center is picked, a plane is only needed for a bare point.
     if entity.objectType not in SKETCH_CENTERS + CIRCULAR:
         inputs.itemById('plane').hasFocus = True
@@ -364,8 +383,8 @@ def _draw_preview(inputs):
     _clear_overlay()
     v = _read_inputs(inputs)
     link = inputs.itemById('link')
-    link.isVisible = v['teeth_link'] is not None
-    link.text = v['teeth_link'] or ''
+    link.isVisible = v['teeth_link'] is not None or v['follow']
+    link.text = v['teeth_link'] or ('Derived circle' if v['follow'] else '')
     try:
         comp, frame = _placement(v['center'], v['plane'])
         solid = _solid(_options(v), frame)
@@ -373,7 +392,7 @@ def _draw_preview(inputs):
         return
     points = []
     indices = []
-    for edge in solid.edges:
+    for edge in body_edges(solid):
         _, t0, t1 = edge.evaluator.getParameterExtents()
         _, strokes = edge.evaluator.getStrokes(t0, t1, 0.002)
         start = len(points) // 3
@@ -498,6 +517,7 @@ def _create_feature(v, parent, solid):
         cf_input.addCustomParameter(input_id, input_id, adsk.core.ValueInput.createByReal(index), '', False)
     for input_id, _, _ in FLAGS:
         cf_input.addCustomParameter(input_id, input_id, adsk.core.ValueInput.createByReal(1 if v[input_id] else 0), '', False)
+    cf_input.addCustomParameter('follow', 'follow', adsk.core.ValueInput.createByReal(1 if v.get('follow') else 0), '', False)
     _add_dependencies(cf_input.addDependency, v)
     cf_input.setStartAndEndFeatures(base, base)
     # Fusion computes the feature once inside add. The base feature already
@@ -638,6 +658,9 @@ def _edit_execute(args):
     if missing:
         ui.messageBox('This pulley was made with an older version of the tool, so these settings were '
                       'not saved: %s. Delete it and create it again to use them.' % ', '.join(missing), 'Pulley')
+    follow = links.param(feature, 'follow')
+    if follow is not None:  # pulleys from before v0.2.1 don't have it
+        follow.value = 1 if v['follow'] else 0
     links.push_profile(p.itemById('teeth').name, v['profile'])  # belts following this pulley
 
     _restore_timeline()
@@ -672,6 +695,7 @@ def _compute(args):
         base = next(f for f in feature.features if f.objectType == adsk.fusion.BaseFeature.classType())
         center, plane = _dependencies(feature)
         _, frame = _placement(center, plane)
+        _follow_circle(feature, center)
         o = _feature_options(feature)
         solid = _solid(o, frame)
         base.startEdit()
@@ -693,6 +717,25 @@ def _compute(args):
         # A modal dialog here would block Fusion mid-recompute.
         app.log('Pulley (%s) failed:\n%s' % (feature.name, traceback.format_exc()))
         args.computeStatus.statusMessages.addError('API_COMPUTE_ERROR', '')
+
+
+def _follow_circle(feature, center):
+    """A pulley following a circle in a derived sketch (_follows) takes the
+    tooth count and profile it now has. Writing a feature's own parameters
+    in its compute doesn't start another compute."""
+    follow = links.param(feature, 'follow')
+    if follow is None or follow.value < 0.5:
+        return
+    circle, tag = sketch_common.derived_tag(center)
+    if tag is None:
+        return
+    p = feature.parameters
+    teeth = sketch_common.circle_teeth(circle, tag)
+    if int(round(p.itemById('teeth').value)) != teeth:
+        p.itemById('teeth').value = teeth
+    index = [k for k, _ in dict(CHOICES)['profile']].index(tag['profile'])
+    if int(round(p.itemById('profile').value)) != index:
+        p.itemById('profile').value = index
 
 
 def _feature_options(feature):
@@ -911,8 +954,28 @@ def _solid(o, frame):
         z.scaleBy(-1)
         y = y.copy()
         y.scaleBy(-1)  # keep the frame right-handed
-    solid = body.build(o)
+    solid = _cached(tuple(sorted(o.items())), lambda: body.build(o))
     m = adsk.core.Matrix3D.create()
     m.setWithCoordinateSystem(origin, x, y, z)
     adsk.fusion.TemporaryBRepManager.get().transform(solid, m)
     return solid
+
+
+# Built solids by their build options, in the tool's own frame. A solid only
+# depends on its options, and rolling the timeline, editing, or moving a
+# center recomputes features with options they were already built with.
+_built = collections.OrderedDict()
+BUILT_KEEP = 8
+
+
+def _cached(key, build):
+    """build() remembered under key; a copy, so the remembered solid never changes."""
+    solid = _built.get(key)
+    if solid is None:
+        solid = build()
+        _built[key] = solid
+        if len(_built) > BUILT_KEEP:
+            _built.popitem(last=False)
+    else:
+        _built.move_to_end(key)
+    return adsk.fusion.TemporaryBRepManager.get().copy(solid)

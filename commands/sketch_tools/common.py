@@ -8,6 +8,7 @@ expressions reference the same tooth-count parameters.
 """
 
 import json
+import math
 import re
 import traceback
 
@@ -119,31 +120,59 @@ def set_param(name, expression, units, comment=''):
     return param
 
 
-def pulley_tag(entity):
-    """The Pulley & Gear Diameter tag on a sketch circle, or None:
-    {'profile', 'teeth' (parameter name), 'kind', and 'module' for a gear}."""
+def tagged_circle(entity):
+    """(circle, tag) for the Pulley & Gear Diameter circle behind entity (the
+    circle or its center point), or (None, None). The tag is {'profile',
+    'teeth' (parameter name), 'kind', and 'module' for a gear}."""
     # Right-click hands over whatever is selected (a component, a body, ...);
     # only sketch points and circles can carry the tag.
     if entity is None or entity.objectType not in (adsk.fusion.SketchPoint.classType(),
                                                    adsk.fusion.SketchCircle.classType()):
-        return None
+        return None, None
     entity = native(entity)
     if entity.objectType == adsk.fusion.SketchPoint.classType():
         # A dimension to a circle is really to its center point.
         entity = next((c for c in entity.parentSketch.sketchCurves.sketchCircles
                        if c.centerSketchPoint == entity and c.attributes.itemByName(ATTR_GROUP, PULLEY_ATTR)), None)
         if entity is None:
-            return None
-    if entity.objectType != adsk.fusion.SketchCircle.classType():
-        return None
+            return None, None
     attr = entity.attributes.itemByName(ATTR_GROUP, PULLEY_ATTR)
     if attr is None:
-        return None
-    tag = json.loads(attr.value)
+        return None, None
+    return entity, json.loads(attr.value)
+
+
+def pulley_tag(entity):
+    """The tag of a Pulley & Gear Diameter circle whose tooth parameter is in
+    this design (see tagged_circle), or None."""
+    _, tag = tagged_circle(entity)
     # A tag whose parameter was deleted no longer links anything.
-    if design().userParameters.itemByName(tag['teeth']) is None:
+    if tag is None or design().userParameters.itemByName(tag['teeth']) is None:
         return None
     return tag
+
+
+def derived_tag(entity):
+    """(circle, tag) for a pulley circle (not a gear) from a sketch derived
+    from another design, or (None, None). A derive brings the sketch's
+    solved geometry and the tags along, but not its dimensions or the tooth
+    parameters, so these are followed through their geometry (circle_teeth)."""
+    circle, tag = tagged_circle(entity)
+    if tag is None or tag['profile'] == GEAR or design().userParameters.itemByName(tag['teeth']) is not None:
+        return None, None
+    return circle, tag
+
+
+def circle_teeth(circle, tag):
+    """The tooth count a pulley circle's diameter stands for, read back from
+    its geometry with the profile and diameter kind in its tag."""
+    spec = profiles.profile(tag['profile'])
+    d = 2 * circle.radius
+    if tag['kind'] in ('outside', 'root'):
+        d += 2 * spec['pld']
+    if tag['kind'] == 'root':
+        d += 2 * spec['depth']
+    return int(round(math.pi * d / spec['pitch']))
 
 
 def set_pulley_tag(circle, tag):

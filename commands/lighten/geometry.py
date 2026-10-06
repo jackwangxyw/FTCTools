@@ -176,6 +176,33 @@ def _point_plus(p, vec):
     return q
 
 
+def loop_coedges(loop):
+    """(edge, isOpposedToEdge) for each coedge of a loop, in loop order.
+
+    Walked by coedge.next: the API's B-rep collections cost O(n) per item, so
+    `for e in face.edges` (or vertices, coEdges) is quadratic on a face with
+    thousands of edges, like a long belt or a big pulley."""
+    first = loop.coEdges.item(0)
+    out = []
+    ce = first
+    while True:
+        out.append((ce.edge, ce.isOpposedToEdge))
+        ce = ce.next
+        if ce == first:
+            return out
+
+
+def body_edges(body):
+    """Every edge of a body once, found through its loops (see loop_coedges)."""
+    seen = set()
+    for face in body.faces:
+        for loop in face.loops:
+            for edge, _ in loop_coedges(loop):
+                if edge.tempId not in seen:
+                    seen.add(edge.tempId)
+                    yield edge
+
+
 def prism(sheet, vec):
     """Solid made by sweeping every face of a planar sheet body along vec.
 
@@ -193,28 +220,32 @@ def prism(sheet, vec):
     body_def = adsk.fusion.BRepBodyDefinition.create()
     for face in sheet.faces:
         shell = body_def.lumpDefinitions.add().shellDefinitions.add()
+        face_loops = [loop_coedges(loop) for loop in face.loops]
         top_v = {}
         bot_v = {}
         vertical = {}
-        for v in face.vertices:
-            p = v.geometry
-            top_v[v.tempId] = body_def.createVertexDefinition(p)
-            bot_v[v.tempId] = body_def.createVertexDefinition(_point_plus(p, vec))
-            vertical[v.tempId] = body_def.createEdgeDefinitionByCurve(
-                top_v[v.tempId], bot_v[v.tempId], adsk.core.Line3D.create(p, _point_plus(p, vec)))
         top_e = {}
         bot_e = {}
-        for e in face.edges:
-            s, t = e.startVertex.tempId, e.endVertex.tempId
-            top_e[e.tempId] = body_def.createEdgeDefinitionByCurve(top_v[s], top_v[t], e.geometry)
-            bot_e[e.tempId] = body_def.createEdgeDefinitionByCurve(bot_v[s], bot_v[t], _translated(e.geometry, vec))
+        for coedges in face_loops:
+            for e, _ in coedges:
+                for v in (e.startVertex, e.endVertex):
+                    if v.tempId in top_v:
+                        continue
+                    p = v.geometry
+                    top_v[v.tempId] = body_def.createVertexDefinition(p)
+                    bot_v[v.tempId] = body_def.createVertexDefinition(_point_plus(p, vec))
+                    vertical[v.tempId] = body_def.createEdgeDefinitionByCurve(
+                        top_v[v.tempId], bot_v[v.tempId], adsk.core.Line3D.create(p, _point_plus(p, vec)))
+            for e, _ in coedges:
+                s, t = e.startVertex.tempId, e.endVertex.tempId
+                top_e[e.tempId] = body_def.createEdgeDefinitionByCurve(top_v[s], top_v[t], e.geometry)
+                bot_e[e.tempId] = body_def.createEdgeDefinitionByCurve(bot_v[s], bot_v[t], _translated(e.geometry, vec))
 
         # Coedges of each loop, ordered counterclockwise about `up`.
         _, n_face = face.evaluator.getNormalAtPoint(face.pointOnFace)
         same = n_face.dotProduct(up) > 0
         loops = []
-        for loop in face.loops:
-            coedges = [(ce.edge, ce.isOpposedToEdge) for ce in loop.coEdges]
+        for coedges in face_loops:
             if not same:
                 coedges = [(e, not opp) for e, opp in reversed(coedges)]
             loops.append(coedges)
