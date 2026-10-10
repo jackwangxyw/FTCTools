@@ -187,6 +187,20 @@ EDIT_DIMENSION_CMD = 'SketchEditDimensionCmdDef'
 _pending = {}
 
 
+def _selected_entity():
+    """The one selected entity, or None. Some things Fusion selects have no API
+    object: Selection.entity gives None for some (right-clicking among sketch
+    constraints) and raises for others ("object does not belong to the
+    occurrence's component", in an assembly)."""
+    sel = ui.activeSelections
+    if sel.count != 1:
+        return None
+    try:
+        return sel.item(0).entity
+    except RuntimeError:
+        return None
+
+
 def install_editing(ui_handlers, handlers, title, edit_cmd_id, match):
     """Double-click and right-click editing for a sketch tool.
 
@@ -206,8 +220,8 @@ def install_editing(ui_handlers, handlers, title, edit_cmd_id, match):
         ui.commandDefinitions.itemById(edit_cmd_id).execute()
 
     def selected():
-        sel = ui.activeSelections
-        return match(sel.item(0).entity) if sel.count == 1 else None
+        entity = _selected_entity()
+        return match(entity) if entity is not None else None
 
     def starting(args):
         if args.commandId != EDIT_DIMENSION_CMD:
@@ -234,8 +248,9 @@ def editing_target(edit_cmd_id, match):
     """What the edit command was started for: the double-clicked entity, or
     the right-clicked selection."""
     target = _pending.pop(edit_cmd_id, None)
-    if target is None and ui.activeSelections.count == 1:
-        target = match(ui.activeSelections.item(0).entity)
+    if target is None:
+        entity = _selected_entity()
+        target = match(entity) if entity is not None else None
     return target
 
 

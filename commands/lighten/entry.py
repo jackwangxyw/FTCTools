@@ -78,18 +78,21 @@ def start():
     _on(_feature_def.customFeatureCompute, adsk.fusion.CustomFeatureEventHandler, _compute)
     _on(app.registerCustomEvent(FOCUS_EVENT_ID), adsk.core.CustomEventHandler, _deferred_focus)
 
-    control = panel.get().controls.addCommand(create_def)
-    control.isPromotedByDefault = True
-    control.isPromoted = True
+    # Sheet metal parts get pocketed too, so the button is on that tab as well.
+    for sheet_metal in (False, True):
+        control = panel.get(sheet_metal=sheet_metal).controls.addCommand(create_def)
+        control.isPromotedByDefault = True
+        control.isPromoted = True
 
 
 def stop():
     _clear_overlay()
     app.unregisterCustomEvent(FOCUS_EVENT_ID)
-    control = panel.get().controls.itemById(CMD_ID)
-    if control:
-        control.deleteMe()
-    panel.remove_if_empty()
+    for sheet_metal in (False, True):
+        control = panel.get(sheet_metal=sheet_metal).controls.itemById(CMD_ID)
+        if control:
+            control.deleteMe()
+        panel.remove_if_empty(sheet_metal=sheet_metal)
     for cmd_id in (CMD_ID, EDIT_CMD_ID):
         cmd_def = ui.commandDefinitions.itemById(cmd_id)
         if cmd_def:

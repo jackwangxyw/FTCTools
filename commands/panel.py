@@ -1,5 +1,6 @@
 """The shared "FTC Tools" panels in the Design workspace: one on the Solid tab,
-and one on the Sketch tab (shown while a sketch is being edited)."""
+one on the Sketch tab (shown while a sketch is being edited), and one on the
+Sheet Metal tab."""
 
 import adsk.core
 
@@ -8,15 +9,19 @@ TAB_ID = 'SolidTab'
 PANEL_ID = 'FTCToolsPanel'
 SKETCH_TAB_ID = 'SketchTab'
 SKETCH_PANEL_ID = 'FTCToolsSketchPanel'
+SHEET_METAL_TAB_ID = 'SheetMetalTab'
+SHEET_METAL_PANEL_ID = 'FTCToolsSheetMetalPanel'
 PANEL_NAME = 'FTC TOOLS'
 
 
-def _ids(sketch):
+def _ids(sketch, sheet_metal):
+    if sheet_metal:
+        return SHEET_METAL_TAB_ID, SHEET_METAL_PANEL_ID
     return (SKETCH_TAB_ID, SKETCH_PANEL_ID) if sketch else (TAB_ID, PANEL_ID)
 
 
-def get(sketch=False):
-    tab_id, panel_id = _ids(sketch)
+def get(sketch=False, sheet_metal=False):
+    tab_id, panel_id = _ids(sketch, sheet_metal)
     ui = adsk.core.Application.get().userInterface
     tab = ui.workspaces.itemById(WORKSPACE_ID).toolbarTabs.itemById(tab_id)
     panel = tab.toolbarPanels.itemById(panel_id)
@@ -25,8 +30,8 @@ def get(sketch=False):
     return panel
 
 
-def remove_if_empty(sketch=False):
-    tab_id, panel_id = _ids(sketch)
+def remove_if_empty(sketch=False, sheet_metal=False):
+    tab_id, panel_id = _ids(sketch, sheet_metal)
     ui = adsk.core.Application.get().userInterface
     tab = ui.workspaces.itemById(WORKSPACE_ID).toolbarTabs.itemById(tab_id)
     panel = tab.toolbarPanels.itemById(panel_id)
