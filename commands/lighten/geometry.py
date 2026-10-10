@@ -26,6 +26,7 @@ DIFFERENCE = adsk.fusion.BooleanTypes.DifferenceBooleanType
 UNION = adsk.fusion.BooleanTypes.UnionBooleanType
 INTERSECTION = adsk.fusion.BooleanTypes.IntersectionBooleanType
 EPS = 1e-7  # cm
+SLIVER = 1e-5  # cm: a region thinner than this is boolean debris, not a pocket
 
 
 class LightenError(Exception):
@@ -137,9 +138,22 @@ def band(curve, normal, half):
 
 def swept_boundary(region, normal, dist):
     """Every point within dist of the region's boundary."""
-    pieces = [band(edge.geometry, normal, dist) for edge in region.edges]
-    pieces += [_disk(vertex.geometry, normal, dist) for vertex in region.vertices]
-    return _union_all([p for p in pieces if p is not None])
+    def pieces():
+        made = [band(edge.geometry, normal, dist) for edge in region.edges]
+        made += [_disk(vertex.geometry, normal, dist) for vertex in region.vertices]
+        return [p for p in made if p is not None]
+
+    try:
+        return _union_all(pieces())
+    except RuntimeError:
+        # The pieces share edges and tangencies wherever holes and slots sit
+        # close together, and the kernel can reject one union order of them
+        # (ASM_INCONS_VERT_ATT) and accept another. One at a time is slower
+        # but joins the same pieces. The first try changed them, so remake.
+        made = pieces()
+        for piece in made[1:]:
+            _merge(made[0], piece, UNION)
+        return made[0]
 
 
 def _union_all(bodies):
@@ -152,6 +166,21 @@ def _union_all(bodies):
             paired.append(bodies[-1])
         bodies = paired
     return bodies[0] if bodies else None
+
+
+def _without_slivers(region):
+    """The region without faces thinner than SLIVER, or None if none are left.
+    Offsetting a face with close holes and slots can leave triangles a few
+    hundredths of a micron wide where two offsets nearly touch; the kernel
+    can't offset those again (ASM_BODY_VERTEX_CRUMBLE)."""
+    slivers = [f for f in region.faces if f.area < SLIVER * sum(e.length for e in f.edges)]
+    if not slivers:
+        return region
+    if len(slivers) == region.faces.count:
+        return None
+    if not _tb().deleteFaces(slivers, True):
+        raise LightenError('Could not clean up the pocket region.')
+    return region
 
 
 def grow(region, normal, dist):
@@ -353,6 +382,8 @@ def compute_pockets(face, normal, strut_curves, exclusion_loops, wall, strut, ra
         if region is None:
             return None
         region = _merge(region, grow(_face(loop), normal, wall + radius), DIFFERENCE)
+    if region is not None:
+        region = _without_slivers(region)
     if region is not None and min_width > 2 * radius:
         # The final grow adds 2 * radius of width, so trim the region at what's left.
         region = trim_thin(region, normal, min_width / 2 - radius)
